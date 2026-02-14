@@ -10,6 +10,24 @@ grep "❌" ~/transcripts/2025-07/*.txt   # find all failures
 
 Your AI conversations are a form of long-term memory: decisions made, bugs debugged, architectures explored, dead ends abandoned. Cassio makes that memory greppable. Run it nightly, commit the output to a repo, and you have a searchable history of every session across every tool you use.
 
+## Quick install
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/ianzepp/cassio/master/install.sh | bash
+```
+
+Or via Homebrew:
+
+```sh
+brew tap ianzepp/tap && brew install cassio
+```
+
+Or build from source:
+
+```sh
+git clone https://github.com/ianzepp/cassio.git && cd cassio && cargo build --release
+```
+
 ## What the output looks like
 
 ### emoji-text (default)
