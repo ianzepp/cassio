@@ -3,9 +3,10 @@ use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
 use chrono::{Datelike, Timelike, TimeZone, Utc};
-use clap::Parser as ClapParser;
+use clap::{Parser as ClapParser, Subcommand};
 
 use cassio::ast::Tool;
+use cassio::config::{self, Config};
 use cassio::discover;
 use cassio::error::CassioError;
 use cassio::formatter::{Formatter, OutputFormat};
@@ -14,24 +15,86 @@ use cassio::parser::Parser;
 #[derive(ClapParser)]
 #[command(name = "cassio", about = "AI transcript processor")]
 struct Cli {
+    #[command(subcommand)]
+    command: Option<Command>,
+
     /// Input file or directory (omit for stdin)
     path: Option<PathBuf>,
 
     /// Output directory for batch mode
-    #[arg(short, long)]
+    #[arg(short, long, global = true)]
     output: Option<PathBuf>,
 
     /// Output format
-    #[arg(short, long, default_value = "emoji-text")]
+    #[arg(short, long, default_value = "emoji-text", global = true)]
     format: String,
 
     /// Discover and process all tools' default paths
-    #[arg(long)]
+    #[arg(long, global = true)]
     all: bool,
 
     /// Regenerate even if output is newer than input
-    #[arg(long)]
+    #[arg(long, global = true)]
     force: bool,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Get a config value (e.g. `cassio get output`)
+    Get {
+        /// Dotted config key (e.g. "sources.claude", "git.autocommit")
+        key: Option<String>,
+    },
+    /// Set a config value (e.g. `cassio set git.autocommit true`)
+    Set {
+        /// Dotted config key
+        key: String,
+        /// Value to set
+        value: String,
+    },
+    /// Remove a config value (e.g. `cassio unset git.autocommit`)
+    Unset {
+        /// Dotted config key
+        key: String,
+    },
+    /// Show full documentation
+    Docs,
+    /// Compact transcripts into summaries
+    Compact {
+        #[command(subcommand)]
+        action: CompactAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum CompactAction {
+    /// Run full pipeline: sessions → dailies → monthlies
+    All {
+        /// Claude model to use
+        #[arg(short, long, default_value = "sonnet")]
+        model: String,
+    },
+    /// Compact daily session transcripts into daily summaries
+    Dailies {
+        /// Input directory containing session transcripts
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+        /// Maximum number of days to process
+        #[arg(short, long)]
+        limit: Option<usize>,
+        /// Claude model to use for compaction
+        #[arg(short, long, default_value = "sonnet")]
+        model: String,
+    },
+    /// Synthesize daily compactions into a monthly summary
+    Monthly {
+        /// Month to process (YYYY-MM format, e.g. 2025-12)
+        #[arg(short, long)]
+        input: String,
+        /// Claude model to use
+        #[arg(short, long, default_value = "sonnet")]
+        model: String,
+    },
 }
 
 fn main() {
@@ -43,7 +106,129 @@ fn main() {
     }
 }
 
-fn run(cli: Cli) -> Result<(), CassioError> {
+fn run(mut cli: Cli) -> Result<(), CassioError> {
+    // Handle config subcommands
+    match cli.command {
+        Some(Command::Get { key }) => {
+            return match key {
+                Some(k) => config::get_value(&k),
+                None => config::list_values(),
+            };
+        }
+        Some(Command::Set { key, value }) => {
+            return config::set_value(&key, &value);
+        }
+        Some(Command::Unset { key }) => {
+            return config::unset_value(&key);
+        }
+        Some(Command::Docs) => {
+            print!("{}", include_str!("../README.md"));
+            return Ok(());
+        }
+        Some(Command::Compact { action }) => {
+            let config = Config::load();
+            let config_output = config.output_path();
+            match action {
+                CompactAction::All { model } => {
+                    let output_dir = cli
+                        .output
+                        .clone()
+                        .or_else(|| config_output.clone())
+                        .ok_or_else(|| {
+                            CassioError::Other(
+                                "--output is required (or set via `cassio set output <path>`)".into(),
+                            )
+                        })?;
+
+                    // Step 1: sessions → transcripts
+                    eprintln!("=== Step 1: Processing sessions ===\n");
+                    let format: OutputFormat = cli
+                        .format
+                        .parse()
+                        .map_err(|e: String| CassioError::Other(e))?;
+                    let formatter = format.formatter();
+                    let sources =
+                        discover::discover_all_sources_with_config(&config.sources);
+                    if sources.is_empty() {
+                        eprintln!("No session sources found, skipping.");
+                    } else {
+                        let source_names: Vec<_> =
+                            sources.iter().map(|(t, _)| t.to_string()).collect();
+                        eprintln!(
+                            "Found {} source(s): {}",
+                            sources.len(),
+                            source_names.join(", ")
+                        );
+                        for (tool, path) in &sources {
+                            eprintln!("\nProcessing {} ({})...", tool, path.display());
+                            let files = discover::find_session_files(path, Some(*tool));
+                            eprintln!("Found {} session files", files.len());
+                            process_file_list(&files, &output_dir, cli.force, &*formatter)?;
+                        }
+                    }
+
+                    // Step 2: transcripts → dailies
+                    eprintln!("\n=== Step 2: Compacting dailies ===\n");
+                    cassio::compact::run_dailies(&output_dir, &output_dir, None, &model)?;
+
+                    // Step 3: dailies → monthlies
+                    eprintln!("\n=== Step 3: Compacting monthlies ===\n");
+                    cassio::compact::run_pending_monthlies(&output_dir, &model)?;
+
+                    return Ok(());
+                }
+                CompactAction::Dailies {
+                    input,
+                    limit,
+                    model,
+                } => {
+                    let input_dir = input
+                        .or_else(|| cli.output.clone())
+                        .or_else(|| config_output.clone())
+                        .ok_or_else(|| {
+                            CassioError::Other(
+                                "--input is required (or set via `cassio set output <path>`)".into(),
+                            )
+                        })?;
+                    let output_dir = cli
+                        .output
+                        .clone()
+                        .or(config_output)
+                        .unwrap_or_else(|| input_dir.clone());
+                    return cassio::compact::run_dailies(&input_dir, &output_dir, limit, &model);
+                }
+                CompactAction::Monthly { input, model } => {
+                    let dir = cli
+                        .output
+                        .clone()
+                        .or_else(|| config_output.clone())
+                        .ok_or_else(|| {
+                            CassioError::Other(
+                                "--output is required (or set via `cassio set output <path>`)".into(),
+                            )
+                        })?;
+                    return cassio::compact::run_monthly(&dir, &input, &model);
+                }
+            }
+        }
+        None => {}
+    }
+
+    // Process mode — load config and merge
+    let config = Config::load();
+
+    // Merge output: CLI arg → config value
+    if cli.output.is_none() {
+        cli.output = config.output_path();
+    }
+
+    // Merge format: CLI arg (if not default) → config value → "emoji-text"
+    if cli.format == "emoji-text" {
+        if let Some(ref fmt) = config.format {
+            cli.format = fmt.clone();
+        }
+    }
+
     let format: OutputFormat = cli
         .format
         .parse()
@@ -51,7 +236,7 @@ fn run(cli: Cli) -> Result<(), CassioError> {
     let formatter = format.formatter();
 
     if cli.all {
-        return run_all_mode(&cli, &*formatter);
+        return run_all_mode(&cli, &config, &*formatter);
     }
 
     match cli.path {
@@ -121,13 +306,13 @@ fn run_batch_mode(
     process_file_list(&files, output_dir, cli.force, formatter)
 }
 
-fn run_all_mode(cli: &Cli, formatter: &dyn Formatter) -> Result<(), CassioError> {
+fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result<(), CassioError> {
     let output_dir = cli
         .output
         .as_ref()
         .ok_or_else(|| CassioError::Other("--output is required for --all mode".into()))?;
 
-    let sources = discover::discover_all_sources();
+    let sources = discover::discover_all_sources_with_config(&config.sources);
     if sources.is_empty() {
         eprintln!("No session directories found. Checked:");
         eprintln!("  Claude:   ~/.claude/projects");

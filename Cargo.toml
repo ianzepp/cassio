@@ -10,4 +10,6 @@ chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
 thiserror = "2"
 dirs = "6"
+toml = "0.8"
+toml_edit = "0.22"
 walkdir = "2"

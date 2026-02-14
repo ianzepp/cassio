@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use walkdir::WalkDir;
 
 use crate::ast::Tool;
+use crate::config::SourcesConfig;
 
 /// Default source paths for each tool.
 pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
@@ -25,6 +26,26 @@ pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
     tools
         .iter()
         .filter_map(|&tool| default_source_path(tool).map(|p| (tool, p)))
+        .collect()
+}
+
+/// Discover sources using config overrides, falling back to defaults.
+pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<(Tool, PathBuf)> {
+    let tools = [Tool::Claude, Tool::Codex, Tool::OpenCode];
+    tools
+        .iter()
+        .filter_map(|&tool| {
+            // Try config path first, then default
+            let config_path = sources.as_ref().and_then(|s| match tool {
+                Tool::Claude => s.claude_path(),
+                Tool::Codex => s.codex_path(),
+                Tool::OpenCode => s.opencode_path(),
+            });
+            let path = config_path
+                .filter(|p| p.exists())
+                .or_else(|| default_source_path(tool));
+            path.map(|p| (tool, p))
+        })
         .collect()
 }
 
