@@ -4,4 +4,6 @@ pub mod config;
 pub mod discover;
 pub mod error;
 pub mod formatter;
+pub mod git;
 pub mod parser;
+pub mod summary;

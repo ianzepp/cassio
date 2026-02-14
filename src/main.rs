@@ -2,7 +2,7 @@ use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
-use chrono::{Datelike, Timelike, TimeZone, Utc};
+use chrono::{Datelike, Local, Timelike, TimeZone, Utc};
 use clap::{Parser as ClapParser, Subcommand};
 
 use cassio::ast::Tool;
@@ -59,7 +59,13 @@ enum Command {
     },
     /// Show full documentation
     Docs,
-    /// Compact transcripts into summaries
+    /// Show summary statistics for transcripts
+    Summary {
+        /// Show per-project detailed stats instead of month×tool overview
+        #[arg(long)]
+        detailed: bool,
+    },
+    /// Compact transcripts into daily/monthly analysis
     Compact {
         #[command(subcommand)]
         action: CompactAction,
@@ -125,6 +131,19 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             print!("{}", include_str!("../README.md"));
             return Ok(());
         }
+        Some(Command::Summary { detailed }) => {
+            let config = Config::load();
+            let dir = cli
+                .output
+                .clone()
+                .or_else(|| config.output_path())
+                .ok_or_else(|| {
+                    CassioError::Other(
+                        "--output is required (or set via `cassio set output <path>`)".into(),
+                    )
+                })?;
+            return cassio::summary::run_summary(&dir, detailed);
+        }
         Some(Command::Compact { action }) => {
             let config = Config::load();
             let config_output = config.output_path();
@@ -175,6 +194,12 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     eprintln!("\n=== Step 3: Compacting monthlies ===\n");
                     cassio::compact::run_pending_monthlies(&output_dir, &model)?;
 
+                    cassio::git::auto_commit_and_push(
+                        &output_dir,
+                        &format!("cassio compact all ({})", Local::now().format("%Y-%m-%d")),
+                        &config.git,
+                    )?;
+
                     return Ok(());
                 }
                 CompactAction::Dailies {
@@ -195,7 +220,13 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         .clone()
                         .or(config_output)
                         .unwrap_or_else(|| input_dir.clone());
-                    return cassio::compact::run_dailies(&input_dir, &output_dir, limit, &model);
+                    cassio::compact::run_dailies(&input_dir, &output_dir, limit, &model)?;
+                    cassio::git::auto_commit_and_push(
+                        &output_dir,
+                        &format!("cassio compact dailies ({})", Local::now().format("%Y-%m-%d")),
+                        &config.git,
+                    )?;
+                    return Ok(());
                 }
                 CompactAction::Monthly { input, model } => {
                     let dir = cli
@@ -207,7 +238,13 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                                 "--output is required (or set via `cassio set output <path>`)".into(),
                             )
                         })?;
-                    return cassio::compact::run_monthly(&dir, &input, &model);
+                    cassio::compact::run_monthly(&dir, &input, &model)?;
+                    cassio::git::auto_commit_and_push(
+                        &dir,
+                        &format!("cassio compact monthly {input}"),
+                        &config.git,
+                    )?;
+                    return Ok(());
                 }
             }
         }
@@ -240,7 +277,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
     }
 
     match cli.path {
-        Some(ref path) if path.is_dir() => run_batch_mode(path, &cli, &*formatter),
+        Some(ref path) if path.is_dir() => run_batch_mode(path, &cli, &config, &*formatter),
         Some(ref path) if path.is_file() => run_single_file(path, &*formatter),
         Some(ref path) => Err(CassioError::Other(format!(
             "Path not found: {}",
@@ -292,6 +329,7 @@ fn run_stdin(formatter: &dyn Formatter) -> Result<(), CassioError> {
 fn run_batch_mode(
     dir: &Path,
     cli: &Cli,
+    config: &Config,
     formatter: &dyn Formatter,
 ) -> Result<(), CassioError> {
     let output_dir = cli
@@ -303,7 +341,15 @@ fn run_batch_mode(
     let total = files.len();
     eprintln!("Found {total} session files");
 
-    process_file_list(&files, output_dir, cli.force, formatter)
+    process_file_list(&files, output_dir, cli.force, formatter)?;
+
+    cassio::git::auto_commit_and_push(
+        output_dir,
+        &format!("cassio batch ({})", Local::now().format("%Y-%m-%d")),
+        &config.git,
+    )?;
+
+    Ok(())
 }
 
 fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result<(), CassioError> {
@@ -337,6 +383,12 @@ fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result
 
         process_file_list(&files, output_dir, cli.force, formatter)?;
     }
+
+    cassio::git::auto_commit_and_push(
+        output_dir,
+        &format!("cassio --all ({})", Local::now().format("%Y-%m-%d")),
+        &config.git,
+    )?;
 
     eprintln!("\nAll done.");
     Ok(())
