@@ -2,6 +2,9 @@
 name = "cassio"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
+description = "Turn AI coding session logs into searchable transcripts"
+repository = "https://github.com/ianzepp/cassio"
 
 [dependencies]
 serde = { version = "1", features = ["derive"] }
