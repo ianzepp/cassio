@@ -184,3 +184,40 @@ fn read_first_line(path: &Path) -> Result<String, std::io::Error> {
     }
     Ok(String::new())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_derive_codex_output_path_valid() {
+        let path = PathBuf::from("/sessions/rollout-2025-11-11T14-12-49-019a7455-abcd.jsonl");
+        let (folder, filename) = derive_codex_output_path(&path);
+        assert_eq!(folder, "2025-11");
+        assert_eq!(filename, "2025-11-11T14-12-49-codex.txt");
+    }
+
+    #[test]
+    fn test_derive_codex_output_path_short_filename() {
+        let path = PathBuf::from("/sessions/rollout-short.jsonl");
+        let (folder, filename) = derive_codex_output_path(&path);
+        assert_eq!(folder, "unknown");
+        assert_eq!(filename, "unknown-codex.txt");
+    }
+
+    #[test]
+    fn test_derive_codex_output_path_no_prefix() {
+        let path = PathBuf::from("/sessions/something.jsonl");
+        let (folder, filename) = derive_codex_output_path(&path);
+        assert_eq!(folder, "unknown");
+        assert_eq!(filename, "unknown-codex.txt");
+    }
+
+    #[test]
+    fn test_derive_output_path_opencode_placeholder() {
+        let path = PathBuf::from("/storage/message/ses_123");
+        let (folder, filename) = derive_output_path(Tool::OpenCode, &path);
+        assert_eq!(folder, "unknown");
+        assert!(filename.contains("opencode"));
+    }
+}

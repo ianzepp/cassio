@@ -459,3 +459,109 @@ fn format_elapsed(elapsed: std::time::Duration) -> String {
         format!("{secs}s")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_format_elapsed_seconds() {
+        let d = std::time::Duration::from_secs(45);
+        assert_eq!(format_elapsed(d), "45s");
+    }
+
+    #[test]
+    fn test_format_elapsed_minutes() {
+        let d = std::time::Duration::from_secs(125);
+        assert_eq!(format_elapsed(d), "2m05s");
+    }
+
+    #[test]
+    fn test_build_monthly_input_structure() {
+        let items = vec![
+            ("2025-01-15".to_string(), "day 15 content".to_string()),
+            ("2025-01-16".to_string(), "day 16 content".to_string()),
+        ];
+        let result = build_monthly_input("PROMPT", "2025-01", &items);
+        assert!(result.starts_with("PROMPT"));
+        assert!(result.contains("2025-01"));
+        assert!(result.contains("2 days"));
+        assert!(result.contains("day 15 content"));
+        assert!(result.contains("day 16 content"));
+        assert!(result.contains("---BEGIN MONTHLY COMPACTIONS"));
+        assert!(result.contains("---END MONTHLY COMPACTIONS---"));
+    }
+
+    #[test]
+    fn test_build_chunks_single_chunk() {
+        let contents = vec![
+            ("a".to_string(), "small content".to_string()),
+        ];
+        let chunks = build_chunks(&contents, 100);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].len(), 1);
+    }
+
+    #[test]
+    fn test_build_chunks_multiple() {
+        // Create content that exceeds MAX_INPUT_BYTES when combined
+        let big = "x".repeat(100_000);
+        let contents = vec![
+            ("a".to_string(), big.clone()),
+            ("b".to_string(), big.clone()),
+        ];
+        let chunks = build_chunks(&contents, 100);
+        assert!(chunks.len() >= 2);
+    }
+
+    #[test]
+    fn test_build_chunks_oversized_single_file() {
+        // Single file that exceeds budget still gets its own chunk
+        let huge = "x".repeat(200_000);
+        let contents = vec![
+            ("small".to_string(), "tiny".to_string()),
+            ("big".to_string(), huge),
+        ];
+        let chunks = build_chunks(&contents, 100);
+        assert!(chunks.len() >= 2);
+    }
+
+    #[test]
+    fn test_extract_session_filters_correctly() {
+        let content = "\
+📋 Session: abc
+📋 Project: /proj
+👤 user prompt here
+🤖 assistant response line 1
+second line of response
+third line
+fourth line
+fifth line
+sixth line
+seventh line that should be cut
+✅ Read: file=\"test.rs\"
+👤 another question
+";
+        // Write to temp file and test extract_session
+        let dir = std::env::temp_dir().join("cassio_test_extract");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("test.txt");
+        std::fs::write(&path, content).unwrap();
+
+        let result = extract_session(&path).unwrap();
+
+        // Should include metadata, user, and assistant lines
+        assert!(result.contains("📋 Session: abc"));
+        assert!(result.contains("👤 user prompt here"));
+        assert!(result.contains("🤖 assistant response line 1"));
+        // Lines after LLM_LINE_LIMIT (5) should be cut
+        assert!(result.contains("sixth line"));
+        assert!(!result.contains("seventh line"));
+        // Tool result lines (✅/❌) should be excluded
+        assert!(!result.contains("✅ Read"));
+        // Second user prompt should be included
+        assert!(result.contains("👤 another question"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+}

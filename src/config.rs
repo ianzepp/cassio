@@ -344,7 +344,7 @@ impl SourcesConfig {
 }
 
 /// Expand a leading `~` to the user's home directory.
-fn expand_tilde(path: &str) -> PathBuf {
+pub(crate) fn expand_tilde(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix("~/") {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
@@ -355,4 +355,165 @@ fn expand_tilde(path: &str) -> PathBuf {
         }
     }
     PathBuf::from(path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // --- split_key tests ---
+
+    #[test]
+    fn test_split_key_simple() {
+        let (table, field) = split_key("output").unwrap();
+        assert!(table.is_empty());
+        assert_eq!(field, "output");
+    }
+
+    #[test]
+    fn test_split_key_dotted() {
+        let (table, field) = split_key("git.commit").unwrap();
+        assert_eq!(table, vec!["git"]);
+        assert_eq!(field, "commit");
+    }
+
+    #[test]
+    fn test_split_key_deeply_nested() {
+        let (table, field) = split_key("a.b.c").unwrap();
+        assert_eq!(table, vec!["a", "b"]);
+        assert_eq!(field, "c");
+    }
+
+    #[test]
+    fn test_split_key_empty_segment_errors() {
+        assert!(split_key("a..b").is_err());
+        assert!(split_key(".a").is_err());
+        assert!(split_key("a.").is_err());
+    }
+
+    // --- infer_value tests ---
+
+    #[test]
+    fn test_infer_value_true() {
+        let v = infer_value("true");
+        assert_eq!(v.as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_infer_value_false() {
+        let v = infer_value("false");
+        assert_eq!(v.as_bool(), Some(false));
+    }
+
+    #[test]
+    fn test_infer_value_integer() {
+        let v = infer_value("42");
+        assert_eq!(v.as_integer(), Some(42));
+    }
+
+    #[test]
+    fn test_infer_value_float() {
+        let v = infer_value("3.14");
+        let f = v.as_float().unwrap();
+        assert!((f - 3.14).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_infer_value_string() {
+        let v = infer_value("hello world");
+        assert_eq!(v.as_str(), Some("hello world"));
+    }
+
+    // --- expand_tilde tests ---
+
+    #[test]
+    fn test_expand_tilde_with_path() {
+        let result = expand_tilde("~/projects");
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(result, home.join("projects"));
+    }
+
+    #[test]
+    fn test_expand_tilde_bare() {
+        let result = expand_tilde("~");
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(result, home);
+    }
+
+    #[test]
+    fn test_expand_tilde_absolute_unchanged() {
+        let result = expand_tilde("/absolute/path");
+        assert_eq!(result, PathBuf::from("/absolute/path"));
+    }
+
+    #[test]
+    fn test_expand_tilde_relative_unchanged() {
+        let result = expand_tilde("relative/path");
+        assert_eq!(result, PathBuf::from("relative/path"));
+    }
+
+    // --- Config deserialization ---
+
+    #[test]
+    fn test_config_deserialize() {
+        let toml_str = r#"
+output = "~/transcripts"
+format = "emoji-text"
+
+[git]
+commit = true
+push = false
+
+[sources]
+claude = "~/.claude/projects"
+"#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(config.output.as_deref(), Some("~/transcripts"));
+        assert_eq!(config.format.as_deref(), Some("emoji-text"));
+        assert!(config.git.commit);
+        assert!(!config.git.push);
+        assert_eq!(config.sources.as_ref().unwrap().claude.as_deref(), Some("~/.claude/projects"));
+    }
+
+    #[test]
+    fn test_config_default() {
+        let config = Config::default();
+        assert!(config.output.is_none());
+        assert!(!config.git.commit);
+        assert!(!config.git.push);
+    }
+
+    #[test]
+    fn test_config_output_path_expands_tilde() {
+        let config = Config {
+            output: Some("~/transcripts".to_string()),
+            ..Default::default()
+        };
+        let path = config.output_path().unwrap();
+        let home = dirs::home_dir().unwrap();
+        assert_eq!(path, home.join("transcripts"));
+    }
+
+    // --- resolve_key tests ---
+
+    #[test]
+    fn test_resolve_key_top_level() {
+        let doc: toml_edit::DocumentMut = "output = \"test\"".parse().unwrap();
+        let item = resolve_key(&doc, "output");
+        assert!(item.is_some());
+    }
+
+    #[test]
+    fn test_resolve_key_nested() {
+        let doc: toml_edit::DocumentMut = "[git]\ncommit = true".parse().unwrap();
+        let item = resolve_key(&doc, "git.commit");
+        assert!(item.is_some());
+    }
+
+    #[test]
+    fn test_resolve_key_missing() {
+        let doc: toml_edit::DocumentMut = "output = \"test\"".parse().unwrap();
+        let item = resolve_key(&doc, "nonexistent");
+        assert!(item.is_none());
+    }
 }
