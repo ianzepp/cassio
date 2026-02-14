@@ -40,6 +40,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Create a default config file
+    Init,
     /// Get a config value (e.g. `cassio get output`)
     Get {
         /// Dotted config key (e.g. "sources.claude", "git.autocommit")
@@ -115,6 +117,9 @@ fn main() {
 fn run(mut cli: Cli) -> Result<(), CassioError> {
     // Handle config subcommands
     match cli.command {
+        Some(Command::Init) => {
+            return config::init();
+        }
         Some(Command::Get { key }) => {
             return match key {
                 Some(k) => config::get_value(&k),

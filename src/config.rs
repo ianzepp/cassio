@@ -154,6 +154,55 @@ pub fn list_values() -> Result<(), CassioError> {
     Ok(())
 }
 
+/// Create a default config file with all options commented out.
+/// Errors if the file already exists.
+pub fn init() -> Result<(), CassioError> {
+    let path = config_path()?;
+    if path.exists() {
+        return Err(CassioError::Other(format!(
+            "Config file already exists: {}",
+            path.display()
+        )));
+    }
+
+    let template = r#"# Cassio configuration
+# See: cassio docs
+
+# Default output directory for transcripts, dailies, and monthlies
+# output = "~/transcripts"
+
+# Default output format: "emoji-text" or "jsonl"
+# format = "emoji-text"
+
+[git]
+# Auto-commit output files after processing
+# commit = false
+
+# Auto-push after committing
+# push = false
+
+[sources]
+# Override default log paths (leave commented to use defaults)
+# claude = "~/.claude/projects"
+# codex = "~/.codex/sessions"
+# opencode = "~/.local/share/opencode/storage"
+"#;
+
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(&path, template)?;
+
+    eprintln!("Created config file: {}", path.display());
+    eprintln!();
+    eprintln!("Edit it directly, or use:");
+    eprintln!("  cassio set output ~/transcripts");
+    eprintln!("  cassio set git.commit true");
+    eprintln!("  cassio get");
+
+    Ok(())
+}
+
 // --- helpers ---
 
 fn config_path() -> Result<PathBuf, CassioError> {

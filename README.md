@@ -147,6 +147,67 @@ cassio --all -o ~/transcripts --force   # regenerate even if output is newer
 
 Batch mode skips files whose output is already newer than the input unless `--force` is set.
 
+## Configuration
+
+Generate a default config file with all options:
+
+```sh
+cassio init
+```
+
+```
+Created config file: ~/.config/cassio/config.toml
+
+Edit it directly, or use:
+  cassio set output ~/transcripts
+  cassio set git.commit true
+  cassio get
+```
+
+Manage individual values:
+
+```sh
+cassio set output "~/transcripts"   # default output directory
+cassio set format jsonl             # default output format
+cassio set git.commit true          # auto-commit after processing
+cassio set git.push true            # auto-push after committing
+
+cassio get                          # list all config values
+cassio get output                   # get a single value
+cassio unset git.push               # remove a value
+```
+
+The resulting config file:
+
+```toml
+output = "~/transcripts"
+format = "jsonl"
+
+[git]
+commit = true
+push = true
+
+# Override default source paths (optional)
+# [sources]
+# claude = "~/.claude/projects"
+# codex = "~/.codex/sessions"
+# opencode = "~/.local/share/opencode/storage"
+```
+
+CLI flags always override config values. With the config above, `cassio --all` just works without `-o`.
+
+### Config keys
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `output` | string | *(none)* | Default output directory |
+| `format` | string | `emoji-text` | Default output format (`emoji-text` or `jsonl`) |
+| `git.commit` | bool | `false` | Auto-commit output files after processing |
+| `git.push` | bool | `false` | Auto-push after committing |
+| `sources.claude` | string | `~/.claude/projects` | Override Claude Code log path |
+| `sources.codex` | string | `~/.codex/sessions` | Override Codex log path |
+| `sources.opencode` | string | `~/.local/share/opencode/storage` | Override OpenCode log path |
+
 ## Summary statistics
 
 Get a quick overview of your transcript history:
@@ -282,58 +343,13 @@ monthly: 2026-02 (14 compaction files)
 finished: 45s, wrote 2026-02.monthly.md
 ```
 
-## Configuration
-
-Cassio reads persistent defaults from `~/.config/cassio/config.toml`. Use the `get` and `set` subcommands to manage it:
-
-```sh
-cassio set output "~/transcripts"   # default output directory
-cassio set format jsonl             # default output format
-cassio set git.commit true          # auto-commit after processing
-cassio set git.push true            # auto-push after committing
-
-cassio get                          # list all config values
-cassio get output                   # get a single value
-cassio unset git.push               # remove a value
-```
-
-The resulting config file:
-
-```toml
-output = "~/transcripts"
-format = "jsonl"
-
-[git]
-commit = true
-push = true
-
-# Override default source paths (optional)
-# [sources]
-# claude = "~/.claude/projects"
-# codex = "~/.codex/sessions"
-# opencode = "~/.local/share/opencode/storage"
-```
-
-CLI flags always override config values. With the config above, `cassio --all` just works without `-o`.
-
-### Config keys
-
-| Key | Type | Default | Description |
-|-----|------|---------|-------------|
-| `output` | string | *(none)* | Default output directory |
-| `format` | string | `emoji-text` | Default output format (`emoji-text` or `jsonl`) |
-| `git.commit` | bool | `false` | Auto-commit output files after processing |
-| `git.push` | bool | `false` | Auto-push after committing |
-| `sources.claude` | string | `~/.claude/projects` | Override Claude Code log path |
-| `sources.codex` | string | `~/.codex/sessions` | Override Codex log path |
-| `sources.opencode` | string | `~/.local/share/opencode/storage` | Override OpenCode log path |
-
 ## CLI reference
 
 ```
 cassio [OPTIONS] [PATH] [COMMAND]
 
 Commands:
+  init     Create a default config file
   summary  Show summary statistics for transcripts
   compact  Compact transcripts into daily/monthly analysis
   get      Get a config value (e.g. cassio get output)
