@@ -14,12 +14,13 @@ const MONTHLY_MERGE_PROMPT: &str = include_str!("prompts/monthly_merge.md");
 /// Max input bytes per LLM call (~150KB ≈ 37.5K tokens at 4 bytes/token).
 const MAX_INPUT_BYTES: usize = 150 * 1024;
 
-/// Run daily compaction: group sessions by date, extract, send to Claude, write .compaction.md.
+/// Run daily compaction: group sessions by date, extract, send to LLM, write .compaction.md.
 pub fn run_dailies(
     input_dir: &Path,
     output_dir: &Path,
     limit: Option<usize>,
     model: &str,
+    provider: &str,
 ) -> Result<(), CassioError> {
     let pending = find_pending_days(input_dir, output_dir)?;
 
@@ -43,7 +44,7 @@ pub fn run_dailies(
         let relative = format!("{month}/{day}");
         eprint!("dailies: [{} of {total}] {relative}...", i + 1);
 
-        match compact_day(output_dir, day, month, files, model) {
+        match compact_day(output_dir, day, month, files, model, provider) {
             Ok(true) => {
                 eprintln!(" ok");
                 compacted += 1;
@@ -66,7 +67,7 @@ pub fn run_dailies(
 
 /// Run monthly compaction for a single month (YYYY-MM).
 /// Reads .compaction.md files, chunks if needed, produces YYYY-MM.monthly.md.
-pub fn run_monthly(dir: &Path, month: &str, model: &str) -> Result<(), CassioError> {
+pub fn run_monthly(dir: &Path, month: &str, model: &str, provider: &str) -> Result<(), CassioError> {
     // Validate month format
     if month.len() != 7 || month.as_bytes()[4] != b'-' {
         return Err(CassioError::Other(format!(
@@ -131,7 +132,7 @@ pub fn run_monthly(dir: &Path, month: &str, model: &str) -> Result<(), CassioErr
         eprintln!("  single pass ({} bytes)", total_content_bytes);
         let input = build_monthly_input(MONTHLY_PROMPT, month, &contents);
         eprint!("  processing...");
-        let output = invoke_claude(&input, model)?;
+        let output = invoke_llm(&input, model, provider)?;
         eprintln!(" ok");
         output
     } else {
@@ -157,12 +158,12 @@ pub fn run_monthly(dir: &Path, month: &str, model: &str) -> Result<(), CassioErr
             );
 
             let input = build_monthly_input(MONTHLY_PROMPT, month, chunk);
-            let output = invoke_claude(&input, model)?;
+            let output = invoke_llm(&input, model, provider)?;
 
             if output.trim().is_empty() {
                 eprintln!(" [FAIL]");
                 return Err(CassioError::Other(format!(
-                    "Claude returned empty output for chunk {}",
+                    "Ollama returned empty output for chunk {}",
                     i + 1
                 )));
             }
@@ -174,14 +175,14 @@ pub fn run_monthly(dir: &Path, month: &str, model: &str) -> Result<(), CassioErr
         // Merge pass
         eprint!("  merging {} chunk summaries...", chunk_summaries.len());
         let merge_input = build_monthly_input(MONTHLY_MERGE_PROMPT, month, &chunk_summaries);
-        let merged = invoke_claude(&merge_input, model)?;
+        let merged = invoke_llm(&merge_input, model, provider)?;
         eprintln!(" ok");
         merged
     };
 
     if result.trim().is_empty() {
         eprintln!("monthly: [FAIL] empty output");
-        return Err(CassioError::Other("Claude returned empty output".into()));
+        return Err(CassioError::Other("Ollama returned empty output".into()));
     }
 
     std::fs::write(&output_path, &result)?;
@@ -192,7 +193,7 @@ pub fn run_monthly(dir: &Path, month: &str, model: &str) -> Result<(), CassioErr
 }
 
 /// Find months that have .compaction.md files but no .monthly.md, and run monthly for each.
-pub fn run_pending_monthlies(dir: &Path, model: &str) -> Result<(), CassioError> {
+pub fn run_pending_monthlies(dir: &Path, model: &str, provider: &str) -> Result<(), CassioError> {
     let pending = find_pending_months(dir)?;
 
     if pending.is_empty() {
@@ -203,7 +204,7 @@ pub fn run_pending_monthlies(dir: &Path, model: &str) -> Result<(), CassioError>
     eprintln!("Found {} pending month(s): {}", pending.len(), pending.join(", "));
 
     for month in &pending {
-        run_monthly(dir, month, model)?;
+        run_monthly(dir, month, model, provider)?;
     }
 
     Ok(())
@@ -302,6 +303,7 @@ fn compact_day(
     month: &str,
     files: &[PathBuf],
     model: &str,
+    provider: &str,
 ) -> Result<bool, CassioError> {
     let mut input = String::new();
     input.push_str(COMPACT_PROMPT);
@@ -317,7 +319,7 @@ fn compact_day(
 
     input.push_str("\n---END TRANSCRIPTS---\n");
 
-    let output = invoke_claude(&input, model)?;
+    let output = invoke_llm(&input, model, provider)?;
 
     if output.trim().is_empty() {
         return Ok(false);
@@ -420,35 +422,87 @@ fn build_chunks(contents: &[(String, String)], prompt_overhead: usize) -> Vec<Ve
 
 // --- shared helpers ---
 
-/// Invoke `claude -p --model <model>` with the given input on stdin.
-fn invoke_claude(input: &str, model: &str) -> Result<String, CassioError> {
-    let mut child = std::process::Command::new("claude")
-        .args(["-p", "--model", model])
+/// Invoke the configured LLM provider with the given input.
+fn invoke_llm(input: &str, model: &str, provider: &str) -> Result<String, CassioError> {
+    match provider {
+        "ollama" => invoke_stdio("ollama", &["run", model], input),
+        "claude" => invoke_stdio("claude", &["-p", "--model", model], input),
+        "codex" => invoke_codex(input, model),
+        _ => Err(CassioError::Other(format!(
+            "Unknown provider: {provider} (supported: ollama, claude, codex)"
+        ))),
+    }
+}
+
+/// Invoke a CLI tool that reads from stdin and writes to stdout.
+fn invoke_stdio(cmd: &str, args: &[&str], input: &str) -> Result<String, CassioError> {
+    let mut child = std::process::Command::new(cmd)
+        .args(args)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
-        .map_err(|e| CassioError::Other(format!("Failed to start claude: {e}")))?;
+        .map_err(|e| CassioError::Other(format!("Failed to start {cmd}: {e}")))?;
 
     if let Some(ref mut stdin) = child.stdin {
         stdin
             .write_all(input.as_bytes())
-            .map_err(|e| CassioError::Other(format!("Failed to write to claude stdin: {e}")))?;
+            .map_err(|e| CassioError::Other(format!("Failed to write to {cmd} stdin: {e}")))?;
     }
     drop(child.stdin.take());
 
     let output = child
         .wait_with_output()
-        .map_err(|e| CassioError::Other(format!("Failed to read claude output: {e}")))?;
+        .map_err(|e| CassioError::Other(format!("Failed to read {cmd} output: {e}")))?;
 
     if !output.status.success() {
         return Err(CassioError::Other(format!(
-            "claude exited with status {}",
+            "{cmd} exited with status {}",
             output.status
         )));
     }
 
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
+}
+
+/// Invoke `codex exec -m <model> -o <tempfile>` with input on stdin.
+fn invoke_codex(input: &str, model: &str) -> Result<String, CassioError> {
+    let tmp = std::env::temp_dir().join(format!("cassio-codex-{}.md", std::process::id()));
+    let tmp_str = tmp.to_string_lossy().to_string();
+
+    let mut child = std::process::Command::new("codex")
+        .args(["exec", "-m", model, "-o", &tmp_str])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| CassioError::Other(format!("Failed to start codex: {e}")))?;
+
+    if let Some(ref mut stdin) = child.stdin {
+        stdin
+            .write_all(input.as_bytes())
+            .map_err(|e| CassioError::Other(format!("Failed to write to codex stdin: {e}")))?;
+    }
+    drop(child.stdin.take());
+
+    let status = child
+        .wait()
+        .map_err(|e| CassioError::Other(format!("Failed to wait for codex: {e}")))?;
+
+    if !status.success() {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(CassioError::Other(format!(
+            "codex exited with status {}",
+            status
+        )));
+    }
+
+    let result = std::fs::read_to_string(&tmp).map_err(|e| {
+        CassioError::Other(format!("Failed to read codex output file {}: {e}", tmp.display()))
+    })?;
+    let _ = std::fs::remove_file(&tmp);
+
+    Ok(result)
 }
 
 fn format_elapsed(elapsed: std::time::Duration) -> String {

@@ -78,9 +78,12 @@ enum Command {
 enum CompactAction {
     /// Run full pipeline: sessions → dailies → monthlies
     All {
-        /// Claude model to use
-        #[arg(short, long, default_value = "sonnet")]
-        model: String,
+        /// Model name passed to the selected provider
+        #[arg(short, long)]
+        model: Option<String>,
+        /// LLM provider: ollama, claude, or codex
+        #[arg(short, long)]
+        provider: Option<String>,
     },
     /// Compact daily session transcripts into daily summaries
     Dailies {
@@ -90,18 +93,24 @@ enum CompactAction {
         /// Maximum number of days to process
         #[arg(short, long)]
         limit: Option<usize>,
-        /// Claude model to use for compaction
-        #[arg(short, long, default_value = "sonnet")]
-        model: String,
+        /// Model name passed to the selected provider
+        #[arg(short, long)]
+        model: Option<String>,
+        /// LLM provider: ollama, claude, or codex
+        #[arg(short, long)]
+        provider: Option<String>,
     },
     /// Synthesize daily compactions into a monthly summary
     Monthly {
         /// Month to process (YYYY-MM format, e.g. 2025-12)
         #[arg(short, long)]
         input: String,
-        /// Claude model to use
-        #[arg(short, long, default_value = "sonnet")]
-        model: String,
+        /// Model name passed to the selected provider
+        #[arg(short, long)]
+        model: Option<String>,
+        /// LLM provider: ollama, claude, or codex
+        #[arg(short, long)]
+        provider: Option<String>,
     },
 }
 
@@ -152,8 +161,12 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
         Some(Command::Compact { action }) => {
             let config = Config::load();
             let config_output = config.output_path();
+            let default_model = config.model.clone().unwrap_or_else(|| "llama3.1".to_string());
+            let default_provider = config.provider.clone().unwrap_or_else(|| "ollama".to_string());
             match action {
-                CompactAction::All { model } => {
+                CompactAction::All { model, provider } => {
+                    let model = model.unwrap_or_else(|| default_model.clone());
+                    let provider = provider.unwrap_or_else(|| default_provider.clone());
                     let output_dir = cli
                         .output
                         .clone()
@@ -193,11 +206,11 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
 
                     // Step 2: transcripts → dailies
                     eprintln!("\n=== Step 2: Compacting dailies ===\n");
-                    cassio::compact::run_dailies(&output_dir, &output_dir, None, &model)?;
+                    cassio::compact::run_dailies(&output_dir, &output_dir, None, &model, &provider)?;
 
                     // Step 3: dailies → monthlies
                     eprintln!("\n=== Step 3: Compacting monthlies ===\n");
-                    cassio::compact::run_pending_monthlies(&output_dir, &model)?;
+                    cassio::compact::run_pending_monthlies(&output_dir, &model, &provider)?;
 
                     cassio::git::auto_commit_and_push(
                         &output_dir,
@@ -211,7 +224,10 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     input,
                     limit,
                     model,
+                    provider,
                 } => {
+                    let model = model.unwrap_or_else(|| default_model.clone());
+                    let provider = provider.unwrap_or_else(|| default_provider.clone());
                     let input_dir = input
                         .or_else(|| cli.output.clone())
                         .or_else(|| config_output.clone())
@@ -225,7 +241,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         .clone()
                         .or(config_output)
                         .unwrap_or_else(|| input_dir.clone());
-                    cassio::compact::run_dailies(&input_dir, &output_dir, limit, &model)?;
+                    cassio::compact::run_dailies(&input_dir, &output_dir, limit, &model, &provider)?;
                     cassio::git::auto_commit_and_push(
                         &output_dir,
                         &format!("cassio compact dailies ({})", Local::now().format("%Y-%m-%d")),
@@ -233,7 +249,9 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     )?;
                     return Ok(());
                 }
-                CompactAction::Monthly { input, model } => {
+                CompactAction::Monthly { input, model, provider } => {
+                    let model = model.unwrap_or(default_model);
+                    let provider = provider.unwrap_or(default_provider);
                     let dir = cli
                         .output
                         .clone()
@@ -243,7 +261,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                                 "--output is required (or set via `cassio set output <path>`)".into(),
                             )
                         })?;
-                    cassio::compact::run_monthly(&dir, &input, &model)?;
+                    cassio::compact::run_monthly(&dir, &input, &model, &provider)?;
                     cassio::git::auto_commit_and_push(
                         &dir,
                         &format!("cassio compact monthly {input}"),

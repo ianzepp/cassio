@@ -202,6 +202,8 @@ CLI flags always override config values. With the config above, `cassio --all` j
 |-----|------|---------|-------------|
 | `output` | string | *(none)* | Default output directory |
 | `format` | string | `emoji-text` | Default output format (`emoji-text` or `jsonl`) |
+| `provider` | string | `ollama` | LLM provider for compaction (`ollama`, `claude`, or `codex`) |
+| `model` | string | `llama3.1` | Default model name (passed to the selected provider) |
 | `git.commit` | bool | `false` | Auto-commit output files after processing |
 | `git.push` | bool | `false` | Auto-push after committing |
 | `sources.claude` | string | `~/.claude/projects` | Override Claude Code log path |
@@ -240,7 +242,7 @@ cassio summary --detailed -o ~/transcripts
 
 ## Daily compaction
 
-Cassio can compact a day's worth of session transcripts into a structured daily summary using Claude. The compaction preserves every user utterance, compresses LLM behavior to one-liners, marks decision points and corrections, and extracts lessons learned.
+Cassio can compact a day's worth of session transcripts into a structured daily summary using a local or cloud LLM. Supported providers are **ollama** (default), **claude**, and **codex**. The compaction preserves every user utterance, compresses LLM behavior to one-liners, marks decision points and corrections, and extracts lessons learned.
 
 ```sh
 # Compact all pending days (input and output in same directory)
@@ -249,8 +251,11 @@ cassio compact dailies -i ~/transcripts
 # Separate input and output directories
 cassio compact dailies -i ~/transcripts -o ~/dailies
 
-# Limit to 3 days, use opus model
-cassio compact dailies -i ~/transcripts --limit 3 --model opus
+# Limit to 3 days, use a specific model
+cassio compact dailies -i ~/transcripts --limit 3 --model llama3.1
+
+# Use Claude instead of Ollama
+cassio compact dailies -i ~/transcripts --provider claude --model sonnet
 ```
 
 Progress is reported per day:
@@ -276,7 +281,7 @@ Synthesize a month of daily compactions into a monthly personality and pattern s
 
 ```sh
 cassio compact monthly -i 2025-12
-cassio compact monthly -i 2025-12 --model opus
+cassio compact monthly -i 2025-12 --model llama3.1
 ```
 
 The monthly prompt aggregates patterns across all daily compactions for the month — what recurs, what evolves, and what's distinctive. It preserves direct quotes as evidence, counts when possible, and separates stable traits from evolving ones.
@@ -310,7 +315,7 @@ Run the entire pipeline in one command — sessions, dailies, and monthlies:
 
 ```sh
 cassio compact all -o ~/transcripts
-cassio compact all --model opus
+cassio compact all --model llama3.1
 ```
 
 This runs three steps in sequence:
@@ -387,11 +392,12 @@ cassio compact dailies [OPTIONS]
 Options:
   -i, --input <DIR>    Input directory containing session transcripts
   -l, --limit <N>      Maximum number of days to process
-  -m, --model <MODEL>  Claude model to use for compaction [default: sonnet]
-  -o, --output <DIR>   Output directory for compaction files
+  -m, --model <MODEL>     Model name passed to the selected provider
+  -p, --provider <NAME>  LLM provider: ollama, claude, or codex
+  -o, --output <DIR>      Output directory for compaction files
 ```
 
-If `-i` is omitted, falls back to `-o` or config `output`. If `-o` is omitted, falls back to config `output` or `-i`. Requires `claude` CLI to be installed and authenticated.
+If `-i` is omitted, falls back to `-o` or config `output`. If `-o` is omitted, falls back to config `output` or `-i`. Requires the selected provider CLI to be installed.
 
 ### cassio compact monthly
 
@@ -400,8 +406,9 @@ cassio compact monthly [OPTIONS] --input <YYYY-MM>
 
 Options:
   -i, --input <YYYY-MM>  Month to process (e.g. 2025-12)
-  -m, --model <MODEL>    Claude model to use [default: sonnet]
-  -o, --output <DIR>     Directory containing month subdirectories
+  -m, --model <MODEL>     Model name passed to the selected provider
+  -p, --provider <NAME>  LLM provider: ollama, claude, or codex
+  -o, --output <DIR>      Directory containing month subdirectories
 ```
 
 Reads `.compaction.md` files from `<output>/<YYYY-MM>/`, writes `<YYYY-MM>.monthly.md` in the same directory. Automatically chunks large months across multiple LLM calls (150KB input budget per call, ~37.5K tokens at 4 bytes/token).
@@ -412,11 +419,12 @@ Reads `.compaction.md` files from `<output>/<YYYY-MM>/`, writes `<YYYY-MM>.month
 cassio compact all [OPTIONS]
 
 Options:
-  -m, --model <MODEL>  Claude model to use [default: sonnet]
-  -o, --output <DIR>   Directory for transcripts, dailies, and monthlies
+  -m, --model <MODEL>     Model name passed to the selected provider
+  -p, --provider <NAME>  LLM provider: ollama, claude, or codex
+  -o, --output <DIR>      Directory for transcripts, dailies, and monthlies
 ```
 
-Runs the full pipeline: sessions → dailies → monthlies. Requires `claude` CLI. Each step skips already-processed items.
+Runs the full pipeline: sessions → dailies → monthlies. Requires the selected provider CLI to be installed. Each step skips already-processed items.
 
 ## Install
 
@@ -432,7 +440,7 @@ cargo build --release
 ```
 Input (JSONL/JSON) → Parser → AST (Session) → Formatter → Output (txt/jsonl)
                                                               ↓
-                                              Extract → Claude → Daily compaction (md)
+                                              Extract → Ollama → Daily compaction (md)
 ```
 
-The AST layer cleanly separates parsing from formatting, making it straightforward to add new input parsers or output formatters. The compaction pipeline operates on formatted output, extracting key signals and sending them through Claude for structured summarization.
+The AST layer cleanly separates parsing from formatting, making it straightforward to add new input parsers or output formatters. The compaction pipeline operates on formatted output, extracting key signals and sending them through Ollama for structured summarization.

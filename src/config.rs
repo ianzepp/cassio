@@ -38,6 +38,8 @@ pub struct SourcesConfig {
 pub struct Config {
     pub output: Option<String>,
     pub format: Option<String>,
+    pub model: Option<String>,
+    pub provider: Option<String>,
     #[serde(default)]
     pub git: GitConfig,
     pub sources: Option<SourcesConfig>,
@@ -173,6 +175,12 @@ pub fn init() -> Result<(), CassioError> {
 
 # Default output format: "emoji-text" or "jsonl"
 # format = "emoji-text"
+
+# LLM provider for compaction: "ollama", "claude", or "codex"
+# provider = "ollama"
+
+# Default model name (passed to the selected provider)
+# model = "llama3.1"
 
 [git]
 # Auto-commit output files after processing
