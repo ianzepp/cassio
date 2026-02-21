@@ -1,3 +1,54 @@
+//! Compaction pipeline: daily and monthly LLM summarization of session transcripts.
+//!
+//! # Architecture overview
+//!
+//! Compaction is the second stage of the cassio pipeline, operating on the
+//! formatted `.txt` transcripts produced by the session stage:
+//!
+//! ```text
+//! Sessions (.txt) → extract_session → LLM prompt → .compaction.md
+//! Daily compactions → build_monthly_input → LLM prompt → .monthly.md
+//! ```
+//!
+//! # Daily compaction
+//!
+//! `run_dailies` groups session transcript files by their date prefix (YYYY-MM-DD),
+//! skips days that already have a `.compaction.md`, and sends the remaining days
+//! to the LLM one at a time.
+//!
+//! The `extract_session` function reduces each transcript to a compact signal:
+//! metadata lines, user messages, the first 5 lines of each assistant response,
+//! and no tool call details. This compression is intentional — the LLM receives
+//! the human-level conversation, not raw tool I/O.
+//!
+//! # Monthly compaction
+//!
+//! `run_monthly` aggregates all `.compaction.md` files for a month. When the
+//! combined size fits within the 150KB input budget, a single LLM call suffices.
+//! When it doesn't, a chunked multi-pass approach is used: each chunk is summarized
+//! separately, then a merge pass synthesizes the chunk summaries into a final monthly.
+//!
+//! # LLM provider abstraction
+//!
+//! Three providers are supported, all invoked as external CLI processes:
+//! - **ollama** — `ollama run <model>` (stdin/stdout)
+//! - **claude** — `claude -p --model <model>` (stdin/stdout)
+//! - **codex** — `codex exec -m <model> -o <tmpfile>` (stdin + output file)
+//!
+//! WHY external CLIs rather than API calls: cassio avoids API key management.
+//! Users who have the tool installed already have credentials configured for its CLI.
+//!
+//! # TRADE-OFFS
+//!
+//! - `extract_session` limits assistant response lines to 5 per message. This loses
+//!   detail but keeps compaction prompts within token budgets. The 5-line limit was
+//!   chosen empirically — enough context for the LLM to understand what was discussed.
+//! - Chunking uses a 150KB byte budget as a proxy for token count, assuming ~4 bytes
+//!   per token. This is conservative; actual LLM context limits vary by provider and
+//!   model. Users with larger context windows can increase `MAX_INPUT_BYTES`.
+//! - `BTreeMap` is used for date grouping so days are always processed in
+//!   chronological order without an explicit sort step.
+
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -12,9 +63,20 @@ const MONTHLY_PROMPT: &str = include_str!("prompts/monthly.md");
 const MONTHLY_MERGE_PROMPT: &str = include_str!("prompts/monthly_merge.md");
 
 /// Max input bytes per LLM call (~150KB ≈ 37.5K tokens at 4 bytes/token).
+///
+/// This is intentionally conservative. Most providers support larger contexts,
+/// but staying well under the limit avoids truncation errors and ensures fast
+/// response times from smaller models.
 const MAX_INPUT_BYTES: usize = 150 * 1024;
 
-/// Run daily compaction: group sessions by date, extract, send to LLM, write .compaction.md.
+/// Run daily compaction over all pending days in `input_dir`.
+///
+/// A "pending day" is any date that has at least one `YYYY-MM-DD*.txt` session
+/// transcript in `input_dir` but no corresponding `.compaction.md` in `output_dir`.
+///
+/// Progress is reported to stderr as `dailies: [N of M] YYYY-MM/YYYY-MM-DD... ok`.
+/// Days that fail (empty LLM output or LLM error) are counted and reported at the end
+/// but do not abort the remaining days.
 pub fn run_dailies(
     input_dir: &Path,
     output_dir: &Path,
@@ -65,8 +127,19 @@ pub fn run_dailies(
     Ok(())
 }
 
-/// Run monthly compaction for a single month (YYYY-MM).
-/// Reads .compaction.md files, chunks if needed, produces YYYY-MM.monthly.md.
+/// Compact all daily compaction files for a single month into a `.monthly.md` summary.
+///
+/// Reads every `.compaction.md` from `<dir>/<month>/`, and either:
+/// - Sends all content in a single LLM call (when total size ≤ `MAX_INPUT_BYTES`)
+/// - Chunks the content, summarizes each chunk, then merges the chunk summaries
+///
+/// The output is written to `<dir>/<month>/<month>.monthly.md`. If that file
+/// already exists, the function skips processing and returns `Ok(())`.
+///
+/// # Error behavior
+///
+/// Returns `Err` if the month directory is missing, there are no compaction files,
+/// or the LLM returns empty output.
 pub fn run_monthly(dir: &Path, month: &str, model: &str, provider: &str) -> Result<(), CassioError> {
     // Validate month format
     if month.len() != 7 || month.as_bytes()[4] != b'-' {
@@ -192,7 +265,10 @@ pub fn run_monthly(dir: &Path, month: &str, model: &str, provider: &str) -> Resu
     Ok(())
 }
 
-/// Find months that have .compaction.md files but no .monthly.md, and run monthly for each.
+/// Discover and compact all months that have daily compactions but no monthly summary.
+///
+/// Scans `dir` for `YYYY-MM/` subdirectories that contain `.compaction.md` files
+/// but no `.monthly.md`, then calls `run_monthly` for each in chronological order.
 pub fn run_pending_monthlies(dir: &Path, model: &str, provider: &str) -> Result<(), CassioError> {
     let pending = find_pending_months(dir)?;
 
@@ -210,7 +286,17 @@ pub fn run_pending_monthlies(dir: &Path, model: &str, provider: &str) -> Result<
     Ok(())
 }
 
-/// Find month directories that have compaction files but no monthly summary yet.
+// ── Private helpers ───────────────────────────────────────────────────────────
+//
+// These functions implement the details of file discovery, content extraction,
+// LLM invocation, and output assembly. They are private because all coordination
+// is managed by the public run_* functions above.
+
+/// Return all `YYYY-MM` months under `dir` that have compaction files but no monthly.
+///
+/// WHY: Checking for `.compaction.md` presence before adding a month to the pending
+/// list means empty month directories (e.g., months with sessions but no compactions
+/// yet) are skipped without producing an error.
 fn find_pending_months(dir: &Path) -> Result<Vec<String>, CassioError> {
     let mut months = Vec::new();
 
@@ -249,9 +335,11 @@ fn find_pending_months(dir: &Path) -> Result<Vec<String>, CassioError> {
     Ok(months)
 }
 
-// --- daily helpers ---
-
-/// Find days that have session .txt files but no .compaction.md yet.
+/// Group session `.txt` files by date and return those without a `.compaction.md`.
+///
+/// WHY: Using `BTreeMap` ensures days are returned in chronological order without
+/// a separate sort. The date prefix is extracted from the filename (first 10 chars
+/// must be `YYYY-MM-DD`) rather than filesystem metadata to be portable.
 fn find_pending_days(
     input_dir: &Path,
     output_dir: &Path,
@@ -296,7 +384,11 @@ fn find_pending_days(
     Ok(pending)
 }
 
-/// Compact a single day's sessions into a .compaction.md file.
+/// Send one day's extracted session content to the LLM and write the result.
+///
+/// Returns `Ok(true)` when the LLM produced output, `Ok(false)` when it returned
+/// empty output (indicating a soft failure), and `Err` for hard failures (I/O, LLM
+/// process error).
 fn compact_day(
     output_dir: &Path,
     day: &str,
@@ -333,7 +425,21 @@ fn compact_day(
     Ok(true)
 }
 
-/// Extract key content from a session transcript.
+/// Reduce a session transcript to the content most useful for LLM compaction.
+///
+/// The extraction strategy compresses assistant responses while preserving the
+/// complete user-level conversation. Rules applied per line:
+///
+/// - Lines starting with 📋 (metadata) → always included
+/// - Lines starting with 👤 (user message) → always included; resets assistant line count
+/// - Lines starting with 🤖 (assistant message) → included; begins assistant line tracking
+/// - Lines starting with ✅ / ❌ (tool calls) → excluded entirely
+/// - Subsequent non-empty lines after 🤖 → included up to `LLM_LINE_LIMIT` (5) lines
+///
+/// WHY: Tool call details (file paths, command output) are not useful signal for
+/// daily compaction — the LLM cares about what was discussed, not which files were
+/// touched. Limiting assistant lines to 5 keeps prompts within token budgets while
+/// capturing the intent of each response.
 fn extract_session(path: &Path) -> Result<String, CassioError> {
     let content = std::fs::read_to_string(path)?;
     let mut out = String::new();
@@ -357,6 +463,8 @@ fn extract_session(path: &Path) -> Result<String, CassioError> {
             in_llm = true;
             llm_lines = 0;
         } else if line.starts_with("✅") || line.starts_with("❌") {
+            // WHY: Tool call lines reset the assistant context — the next non-tool
+            // content may be a continuation that we want to capture.
             in_llm = false;
         } else if in_llm {
             if !line.trim().is_empty() {
@@ -372,9 +480,10 @@ fn extract_session(path: &Path) -> Result<String, CassioError> {
     Ok(out)
 }
 
-// --- monthly helpers ---
-
-/// Build the full input string for a monthly (or chunk) LLM call.
+/// Assemble the full input string for a monthly (or chunk) LLM call.
+///
+/// Wraps the prompt and all compaction content in named delimiters so the LLM
+/// can distinguish between the instruction and the data sections.
 fn build_monthly_input(prompt: &str, month: &str, items: &[(String, String)]) -> String {
     let mut input = String::new();
     input.push_str(prompt);
@@ -392,8 +501,16 @@ fn build_monthly_input(prompt: &str, month: &str, items: &[(String, String)]) ->
     input
 }
 
-/// Split compaction contents into chunks that fit within MAX_INPUT_BYTES.
-/// Each chunk is a slice of (filename, content) pairs.
+/// Split compaction content into chunks that each fit within the per-call byte budget.
+///
+/// Each returned chunk is a `Vec<(filename, content)>` pair list suitable for
+/// passing to `build_monthly_input`. Chunks respect the budget on a best-effort
+/// basis: a single file that exceeds the budget gets its own chunk rather than
+/// being dropped.
+///
+/// TRADE-OFF: Chunking by byte count rather than token count is an approximation.
+/// It works well in practice because the 4 bytes/token estimate is conservative for
+/// English markdown content.
 fn build_chunks(contents: &[(String, String)], prompt_overhead: usize) -> Vec<Vec<(String, String)>> {
     let budget = MAX_INPUT_BYTES.saturating_sub(prompt_overhead);
     let mut chunks: Vec<Vec<(String, String)>> = Vec::new();
@@ -420,9 +537,11 @@ fn build_chunks(contents: &[(String, String)], prompt_overhead: usize) -> Vec<Ve
     chunks
 }
 
-// --- shared helpers ---
-
-/// Invoke the configured LLM provider with the given input.
+/// Dispatch to the appropriate LLM provider CLI and return its output.
+///
+/// All providers read the prompt from stdin. Ollama and Claude write output to
+/// stdout; Codex uses a temporary file for output because its CLI does not support
+/// stdout streaming in exec mode.
 fn invoke_llm(input: &str, model: &str, provider: &str) -> Result<String, CassioError> {
     match provider {
         "ollama" => invoke_stdio("ollama", &["run", model], input),
@@ -434,7 +553,10 @@ fn invoke_llm(input: &str, model: &str, provider: &str) -> Result<String, Cassio
     }
 }
 
-/// Invoke a CLI tool that reads from stdin and writes to stdout.
+/// Spawn a CLI process, write `input` to its stdin, and capture stdout.
+///
+/// Stderr is suppressed to avoid LLM progress output (e.g., Ollama token streaming)
+/// mixing with cassio's own progress reporting.
 fn invoke_stdio(cmd: &str, args: &[&str], input: &str) -> Result<String, CassioError> {
     let mut child = std::process::Command::new(cmd)
         .args(args)
@@ -465,7 +587,14 @@ fn invoke_stdio(cmd: &str, args: &[&str], input: &str) -> Result<String, CassioE
     Ok(String::from_utf8_lossy(&output.stdout).to_string())
 }
 
-/// Invoke `codex exec -m <model> -o <tempfile>` with input on stdin.
+/// Invoke Codex in exec mode, capturing its output via a temporary file.
+///
+/// WHY: `codex exec` does not write structured output to stdout — it uses a separate
+/// `-o` output file flag. The temp file is cleaned up on both success and failure.
+///
+/// EDGE: If the process succeeds but the output file is missing or unreadable,
+/// this returns an error. The temp file name includes the process ID to avoid
+/// collisions when multiple cassio instances run simultaneously.
 fn invoke_codex(input: &str, model: &str) -> Result<String, CassioError> {
     let tmp = std::env::temp_dir().join(format!("cassio-codex-{}.md", std::process::id()));
     let tmp_str = tmp.to_string_lossy().to_string();
@@ -505,6 +634,7 @@ fn invoke_codex(input: &str, model: &str) -> Result<String, CassioError> {
     Ok(result)
 }
 
+/// Format a duration as `Xm YYs` (for ≥60s) or `Xs`.
 fn format_elapsed(elapsed: std::time::Duration) -> String {
     let secs = elapsed.as_secs();
     if secs >= 60 {

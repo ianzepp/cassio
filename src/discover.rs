@@ -1,3 +1,35 @@
+//! Source discovery: finding tool log directories and individual session files.
+//!
+//! # Architecture overview
+//!
+//! Discovery is the first step in every pipeline run. It answers two questions:
+//! 1. **Where are the session logs?** — `discover_all_sources*` functions return
+//!    `(Tool, PathBuf)` pairs for each installed AI tool.
+//! 2. **Which files within a directory contain sessions?** — `find_session_files`
+//!    walks a directory and returns the parseable session files within it.
+//!
+//! This module deliberately knows nothing about parsing. It only produces file
+//! paths; the caller chooses which parser to hand them to.
+//!
+//! # File format heuristics
+//!
+//! Each tool has a distinct file layout:
+//! - **Claude Code**: any `*.jsonl` file (excluding `.bak` variants)
+//! - **Codex**: only `rollout-*.jsonl` files (other `.jsonl` files are internal state)
+//! - **OpenCode**: session IDs are directories named `ses_*` under `message/`
+//!
+//! # TRADE-OFFS
+//!
+//! Auto-detection (`tool = None`) uses directory path string matching rather than
+//! content inspection, which is fast but fragile if a user places log directories
+//! at unexpected locations. Explicit tool hints should always be preferred when
+//! the tool is known.
+//!
+//! Output path derivation for OpenCode reads from the session JSON on disk rather
+//! than deriving from the file path, because OpenCode session IDs are opaque UUIDs
+//! with no timestamp. This means the first time a batch runs it pays a small extra
+//! disk read per OpenCode session. The `main.rs` handles this as a special case.
+
 use std::path::{Path, PathBuf};
 
 use walkdir::WalkDir;
@@ -5,7 +37,11 @@ use walkdir::WalkDir;
 use crate::ast::Tool;
 use crate::config::SourcesConfig;
 
-/// Default source paths for each tool.
+/// Return the default log directory for a tool, or `None` if it does not exist.
+///
+/// WHY: Returning `None` rather than an error when a directory is absent lets
+/// `discover_all_sources` skip tools that are not installed on this machine
+/// without treating that as a failure.
 pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let path = match tool {
@@ -21,7 +57,10 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
     }
 }
 
-/// Discover all available tool source directories.
+/// Return all tool source directories that exist on this machine.
+///
+/// Checks the four known tools in a fixed order. Tools whose default directory
+/// does not exist are silently skipped.
 pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
     let tools = [Tool::Claude, Tool::ClaudeDesktop, Tool::Codex, Tool::OpenCode];
     tools
@@ -30,7 +69,15 @@ pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
         .collect()
 }
 
-/// Discover sources using config overrides, falling back to defaults.
+/// Return all tool source directories, preferring config-specified paths over defaults.
+///
+/// For each known tool: if the config specifies a path and it exists, use it;
+/// otherwise fall back to `default_source_path`. Tools with no existing directory
+/// are omitted from the result.
+///
+/// WHY: This allows power users to relocate logs without breaking the `--all` mode.
+/// The config path wins only when it exists — a misconfigured path degrades to the
+/// default rather than failing the whole discovery step.
 pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<(Tool, PathBuf)> {
     let tools = [Tool::Claude, Tool::ClaudeDesktop, Tool::Codex, Tool::OpenCode];
     tools
@@ -51,7 +98,13 @@ pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<
         .collect()
 }
 
-/// Find all parseable session files in a directory.
+/// Walk a directory and return all parseable session files within it.
+///
+/// When `tool` is provided, uses the appropriate file-selection heuristic for that
+/// tool. When `tool` is `None`, auto-detects based on directory path substrings.
+///
+/// Each returned pair carries the `Tool` tag so callers can select the right parser
+/// without re-inspecting the path.
 pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)> {
     let mut results = Vec::new();
 
@@ -83,6 +136,10 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
     results
 }
 
+/// Collect all Claude/Claude Desktop session files under `dir`.
+///
+/// Claude Code stores one session per `.jsonl` file. `.bak` variants are
+/// leftovers from interrupted writes and must not be parsed.
 fn find_claude_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>, tool: Tool) {
     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
@@ -96,6 +153,10 @@ fn find_claude_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>, tool: Tool)
     }
 }
 
+/// Collect Codex rollout files under `dir`.
+///
+/// WHY: Codex places other JSONL files (e.g., internal state) alongside session
+/// files. Only `rollout-*.jsonl` files are actual session transcripts.
 fn find_codex_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
@@ -109,8 +170,13 @@ fn find_codex_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
     }
 }
 
+/// Collect OpenCode session directories under `dir`.
+///
+/// OpenCode's storage layout is fragmented: session metadata lives under
+/// `session/<project_id>/<ses_id>.json`, messages under `message/<ses_id>/<msg_id>.json`,
+/// and parts under `part/<msg_id>/<part_id>.json`. The session ID directory under
+/// `message/` is the canonical path passed to the parser.
 fn find_opencode_sessions(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
-    // OpenCode stores sessions under message/<session_id>/
     let message_dir = dir.join("message");
     if message_dir.is_dir() {
         if let Ok(entries) = std::fs::read_dir(&message_dir) {
@@ -124,8 +190,11 @@ fn find_opencode_sessions(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
     }
 }
 
-/// Derive output path from a session file for batch mode.
-/// Returns (year-month folder, timestamp-tool.txt filename).
+/// Derive the output path `(year-month folder, filename)` for a session file.
+///
+/// Used in batch mode to organize transcripts into `YYYY-MM/` subdirectories.
+/// For OpenCode, this returns a placeholder because the real timestamp requires
+/// reading the session JSON — the caller in `main.rs` handles that case separately.
 pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
     match tool {
         Tool::Claude | Tool::ClaudeDesktop => derive_claude_output_path(path),
@@ -137,6 +206,12 @@ pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
     }
 }
 
+/// Derive the output path for a Claude session file by reading its first record's timestamp.
+///
+/// WHY: Claude session filenames are opaque UUIDs with no date component. The
+/// timestamp must be extracted from the first JSON record in the file. The resulting
+/// path uses `YYYY-MM/YYYY-MM-DDTHH-MM-SS-claude.txt` format so transcripts sort
+/// chronologically within the output directory.
 fn derive_claude_output_path(path: &Path) -> (String, String) {
     // Read first line to get timestamp
     if let Ok(first_line) = read_first_line(path) {
@@ -155,6 +230,10 @@ fn derive_claude_output_path(path: &Path) -> (String, String) {
     ("unknown".to_string(), "unknown-claude.txt".to_string())
 }
 
+/// Derive the output path for a Codex rollout file from its filename.
+///
+/// Codex embeds the session timestamp directly in the filename as
+/// `rollout-YYYY-MM-DDTHH-MM-SS-<uuid>.jsonl`, so no file I/O is needed.
 fn derive_codex_output_path(path: &Path) -> (String, String) {
     // Filename: rollout-YYYY-MM-DDTHH-MM-SS-uuid.jsonl
     let filename = path

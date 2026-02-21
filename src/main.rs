@@ -1,3 +1,33 @@
+//! CLI entry point for cassio.
+//!
+//! # Architecture overview
+//!
+//! `main.rs` is the thin coordination layer between the CLI surface and the
+//! library crate. Its responsibilities are:
+//!
+//! 1. Parse CLI arguments (via `clap`)
+//! 2. Load and merge configuration from `~/.config/cassio/config.toml`
+//! 3. Dispatch to the appropriate processing mode:
+//!    - **Subcommands** (`init`, `get`, `set`, `unset`, `docs`, `summary`, `compact`)
+//!      are handled inline before the process mode logic.
+//!    - **Process mode** routes to `run_single_file`, `run_stdin`, `run_batch_mode`,
+//!      or `run_all_mode` based on the presence and type of the `PATH` argument.
+//!
+//! # Configuration merging
+//!
+//! CLI flags take precedence over config file values. The merge happens in `run()`
+//! after subcommands are handled:
+//! - `--output` overrides `config.output`
+//! - `--format` is only overridden by config when the CLI value is still the default
+//!   `"emoji-text"` — this prevents a config `format` from being silently ignored
+//!   when the user explicitly passes `--format` on the command line.
+//!
+//! # Error handling
+//!
+//! All functions return `Result<(), CassioError>`. `main()` catches errors and
+//! prints them to stderr before exiting with code 1. This keeps error reporting
+//! consistent regardless of which path through `run()` failed.
+
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
@@ -310,6 +340,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
     }
 }
 
+/// Parse and format a single session file, writing output to stdout.
 fn run_single_file(path: &Path, formatter: &dyn Formatter) -> Result<(), CassioError> {
     let parser = cassio::parser::detect_parser(path)?;
     let session = parser.parse_session(path)?;
@@ -319,6 +350,12 @@ fn run_single_file(path: &Path, formatter: &dyn Formatter) -> Result<(), CassioE
     Ok(())
 }
 
+/// Read all of stdin, detect the log format from the first non-empty line, and format.
+///
+/// WHY: Buffering all lines before parsing is necessary because format detection
+/// requires peeking at the first line, but the parser needs all lines. An
+/// alternative would be a two-pass approach, but that would require the input
+/// to be seekable (stdin is not).
 fn run_stdin(formatter: &dyn Formatter) -> Result<(), CassioError> {
     let stdin = io::stdin();
     let reader = stdin.lock();
@@ -349,6 +386,11 @@ fn run_stdin(formatter: &dyn Formatter) -> Result<(), CassioError> {
     Ok(())
 }
 
+/// Process all session files in a directory, writing formatted output to `--output`.
+///
+/// The directory is auto-detected for tool type (Claude, Codex, or OpenCode)
+/// based on its path. Files whose output is already newer than the input are
+/// skipped unless `--force` is set.
 fn run_batch_mode(
     dir: &Path,
     cli: &Cli,
@@ -375,6 +417,11 @@ fn run_batch_mode(
     Ok(())
 }
 
+/// Discover all installed tool sources and batch-process them into `--output`.
+///
+/// Uses `discover::discover_all_sources_with_config` to find source directories,
+/// then calls `process_file_list` for each tool. Sources that don't exist on this
+/// machine are silently skipped. Errors if no sources are found at all.
 fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result<(), CassioError> {
     let output_dir = cli
         .output
@@ -418,6 +465,23 @@ fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result
     Ok(())
 }
 
+/// Process a list of `(Tool, path)` pairs and write formatted transcripts to `output_dir`.
+///
+/// PHASE 1: PRE-FLIGHT CHECKS
+/// Skip empty files (zero bytes) and files whose output is already up-to-date,
+/// unless `force` is true.
+///
+/// PHASE 2: OUTPUT PATH DERIVATION
+/// Compute the `YYYY-MM/filename.txt` path within `output_dir` using
+/// `derive_output_path_for`. Create parent directories as needed.
+///
+/// PHASE 3: PARSING AND WRITING
+/// Parse the session with the appropriate tool parser and write formatted output.
+/// Sessions with no user or assistant messages are skipped (they contain only
+/// system events and produce empty transcripts).
+/// Parse failures are logged as warnings but do not abort the batch.
+///
+/// Progress is reported to stderr with a rolling counter every 100 files.
 fn process_file_list(
     files: &[(Tool, PathBuf)],
     output_dir: &Path,
@@ -485,6 +549,11 @@ fn process_file_list(
     Ok(())
 }
 
+/// Compute the `(year-month-folder, filename)` output path for a session file.
+///
+/// OpenCode requires reading the session JSON to get a timestamp (since its session
+/// IDs are opaque), so this function handles that case directly. Other tools delegate
+/// to `discover::derive_output_path`.
 fn derive_output_path_for(tool: Tool, path: &Path) -> Result<(String, String), CassioError> {
     match tool {
         Tool::OpenCode => {
@@ -538,6 +607,11 @@ fn derive_output_path_for(tool: Tool, path: &Path) -> Result<(String, String), C
     }
 }
 
+/// Return `true` when the output file is newer than (or the same age as) the input.
+///
+/// WHY: Comparing modification times lets batch mode skip already-processed files
+/// without storing any external state. Returns `false` when either file is missing
+/// or when modification times are unavailable (some filesystems do not support mtime).
 fn is_up_to_date(input: &Path, output: &Path) -> bool {
     let input_meta = match fs::metadata(input) {
         Ok(m) => m,

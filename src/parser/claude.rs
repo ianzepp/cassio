@@ -1,3 +1,42 @@
+//! Parser for Claude Code session logs (JSONL format).
+//!
+//! # System context
+//!
+//! Claude Code writes one JSON record per line to `~/.claude/projects/**/*.jsonl`.
+//! Each record has a `"type"` field — `"user"`, `"assistant"`, or `"queue-operation"` —
+//! and a `"message"` field containing the Anthropic Messages API payload. Records
+//! also carry `"sessionId"`, `"timestamp"`, `"cwd"`, `"version"`, and `"gitBranch"`.
+//!
+//! # Design philosophy
+//!
+//! The parser makes a **single linear pass** over the JSONL lines, accumulating
+//! session metadata from the first record, messages from subsequent records, and
+//! statistics as it goes. This keeps memory proportional to the output rather
+//! than the raw log size.
+//!
+//! # Tool call correlation
+//!
+//! Claude Code splits tool interactions across two turns:
+//! - `assistant` record: contains `tool_use` blocks (the invocation)
+//! - `user` record: contains `tool_result` blocks (the outcome)
+//!
+//! The parser maintains `pending_tools: HashMap<tool_use_id, (name, input)>` to
+//! correlate results with their originating invocations. When a `tool_result`
+//! arrives, the matching pending entry is removed and its name/input are used to
+//! generate the summary for the `ToolResult` content block.
+//!
+//! # TRADE-OFFS
+//!
+//! - `isMeta` records are skipped entirely. They contain system prompts and context
+//!   injection that are not useful in a human-readable transcript.
+//! - Content blocks starting with `<` are treated as XML system content and dropped.
+//!   This is a heuristic — it may occasionally suppress legitimate user messages
+//!   that start with an angle bracket, but in practice Claude Code never generates
+//!   those in user turns.
+//! - Token usage is accumulated into `SessionStats` as a running total AND stored
+//!   per-message in `Message.usage`. The redundancy avoids a second pass when
+//!   computing the summary.
+
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::Path;
@@ -10,6 +49,7 @@ use crate::ast::*;
 use crate::error::CassioError;
 use crate::parser::Parser;
 
+/// Parser for Claude Code JSONL session logs.
 pub struct ClaudeParser;
 
 impl Parser for ClaudeParser {
@@ -21,11 +61,21 @@ impl Parser for ClaudeParser {
 }
 
 impl ClaudeParser {
+    /// Parse a Claude session from an arbitrary line iterator.
+    ///
+    /// WHY: Accepting an iterator rather than a file path makes this function
+    /// testable without touching the filesystem, and lets stdin mode reuse the
+    /// same logic after reading all lines into a `Vec<String>`.
     pub fn parse_from_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioError> {
         parse_lines(lines)
     }
 }
 
+/// A single top-level record from a Claude Code JSONL session file.
+///
+/// WHY: Deserializing into a typed struct rather than `serde_json::Value` gives
+/// compile-time guarantees that the fields we depend on exist in the schema. The
+/// `message` field stays as `Value` because its shape varies by `record_type`.
 #[derive(Deserialize)]
 struct SessionRecord {
     #[serde(rename = "type")]
@@ -37,20 +87,47 @@ struct SessionRecord {
     version: Option<String>,
     #[serde(rename = "gitBranch")]
     git_branch: Option<String>,
+    /// When `true`, this record is a system/context injection rather than real user input.
     #[serde(rename = "isMeta")]
     is_meta: Option<bool>,
     message: Value,
 }
 
+/// Core parsing routine: consume JSONL lines and produce a normalized `Session`.
+///
+/// PHASE 1: LINE PROCESSING
+/// Iterate every non-empty line. Lines that fail to deserialize as `SessionRecord`
+/// are silently skipped — malformed or partial writes should not abort the whole
+/// session. Track first/last timestamps for duration calculation.
+///
+/// PHASE 2: METADATA INITIALIZATION
+/// The first valid record seeds the session metadata. The `model` field is left
+/// `None` here and patched in after the loop, because the model is only known once
+/// an `assistant` record with a non-synthetic model name has been seen.
+///
+/// PHASE 3: RECORD DISPATCH
+/// Route each record by its `record_type`:
+/// - `user` → `parse_user_record` (text content + tool results)
+/// - `assistant` → `parse_assistant_record` (text, thinking, tool use, token tracking)
+/// - `queue-operation` → inline handling (parsed again from raw Value for the
+///   `content` field that `SessionRecord` does not capture)
+///
+/// PHASE 4: FINALIZATION
+/// Patch `metadata.model`, compute duration from the timestamp range, and assemble
+/// the `Session` struct.
 fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioError> {
     let mut metadata: Option<SessionMetadata> = None;
     let mut messages: Vec<Message> = Vec::new();
     let mut stats = SessionStats::default();
     let mut current_model: Option<String> = None;
+    // WHY: pending_tools maps tool_use_id → (name, input) so that when the
+    // corresponding tool_result arrives in the next user turn, we can attach the
+    // tool name and generate a human-readable summary.
     let mut pending_tools: HashMap<String, (String, Value)> = HashMap::new();
     let mut last_timestamp: Option<DateTime<Utc>> = None;
     let mut first_timestamp: Option<DateTime<Utc>> = None;
 
+    // PHASE 1 + 2 + 3: LINE PROCESSING, METADATA INITIALIZATION, RECORD DISPATCH
     for line in lines {
         let trimmed = line.trim();
         if trimmed.is_empty() {
@@ -59,6 +136,7 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
 
         let record: SessionRecord = match serde_json::from_str(trimmed) {
             Ok(r) => r,
+            // EDGE: Skip lines that aren't valid SessionRecord JSON (e.g., partial writes).
             Err(_) => continue,
         };
 
@@ -70,7 +148,6 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
             last_timestamp = Some(t);
         }
 
-        // Capture metadata from first record
         if metadata.is_none() {
             metadata = Some(SessionMetadata {
                 session_id: record.session_id.clone(),
@@ -86,6 +163,9 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
 
         match record.record_type.as_str() {
             "user" => {
+                // WHY: isMeta records are system context injections (prompts, file
+                // contents) that Claude Code logs as user turns. They are not human
+                // input and should not appear in transcripts.
                 if record.is_meta.unwrap_or(false) {
                     continue;
                 }
@@ -108,7 +188,8 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                 );
             }
             "queue-operation" => {
-                // Extract content from the raw record
+                // WHY: queue-operation records carry a top-level `content` field that
+                // SessionRecord does not model. Re-parse as raw Value to access it.
                 let raw: Value = serde_json::from_str(trimmed).unwrap_or_default();
                 if let Some(content) = raw.get("content").and_then(|c| c.as_str()) {
                     let summary = extract_queue_summary(content);
@@ -127,13 +208,11 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
         }
     }
 
+    // PHASE 4: FINALIZATION
     let meta = metadata.ok_or_else(|| CassioError::Other("No records found".into()))?;
-
-    // Update model in metadata
     let mut meta = meta;
     meta.model = current_model;
 
-    // Calculate duration
     if let (Some(first), Some(last)) = (first_timestamp, last_timestamp) {
         let dur = (last - first).num_seconds();
         if dur >= 0 {
@@ -148,6 +227,16 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
     })
 }
 
+/// Process a `user`-type record from the JSONL log.
+///
+/// A user record's `message` field contains an Anthropic Messages API request body.
+/// The `content` field may be:
+/// - A plain string (the user's text message)
+/// - An array of content blocks, which can include `text` and `tool_result` entries
+///
+/// Tool result blocks are correlated with their pending tool invocations and converted
+/// into `ToolResult` content blocks. Statistics for tool calls, errors, and file
+/// operations are updated here because the outcome is only known once the result arrives.
 fn parse_user_record(
     message: &Value,
     ts: Option<DateTime<Utc>>,
@@ -254,6 +343,17 @@ fn parse_user_record(
     }
 }
 
+/// Process an `assistant`-type record from the JSONL log.
+///
+/// The assistant record contains the Anthropic Messages API response. Content blocks
+/// may include `text`, `thinking`, and `tool_use` variants. Model identity and token
+/// usage are also extracted here.
+///
+/// `tool_use` blocks are stored in `pending_tools` so they can be matched with their
+/// corresponding `tool_result` when the next user record arrives.
+///
+/// A `ModelChange` content block is emitted whenever the model name changes, allowing
+/// formatters to show model transitions inline with the conversation.
 fn parse_assistant_record(
     message: &Value,
     ts: Option<DateTime<Utc>>,
@@ -376,6 +476,11 @@ fn parse_assistant_record(
     }
 }
 
+/// Extract a human-readable summary from a queue-operation content string.
+///
+/// Claude Code queue operations embed a `<summary>...</summary>` XML fragment.
+/// This helper extracts the text within the tags. When no tags are present,
+/// the first 100 bytes of the content are used as a fallback.
 fn extract_queue_summary(content: &str) -> String {
     // Extract <summary>...</summary> from queue operation content
     if let Some(start) = content.find("<summary>") {
@@ -393,6 +498,15 @@ fn extract_queue_summary(content: &str) -> String {
     truncated.trim().to_string()
 }
 
+/// Convert a tool invocation's name and input into a compact, human-readable summary.
+///
+/// Each known Claude Code tool name gets a tailored format that highlights the most
+/// important argument (file path, command, query, etc.). Unknown tools fall back to
+/// truncated JSON serialization.
+///
+/// WHY: Tool inputs can contain thousands of tokens (e.g., file contents for Write,
+/// todos for TodoWrite). Displaying the raw input would make transcripts unreadable.
+/// Pre-computing a summary at parse time keeps the formatter simple.
 pub fn format_tool_input(tool_name: &str, input: &Value) -> String {
     match tool_name {
         "Bash" => {
@@ -503,6 +617,10 @@ pub fn format_tool_input(tool_name: &str, input: &Value) -> String {
     }
 }
 
+/// Parse an RFC 3339 timestamp string, returning `None` on failure.
+///
+/// WHY: Returning `None` instead of propagating an error lets the caller continue
+/// processing records with malformed timestamps rather than aborting the session.
 fn parse_timestamp(s: &str) -> Option<DateTime<Utc>> {
     s.parse::<DateTime<Utc>>().ok()
 }

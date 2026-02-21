@@ -1,36 +1,79 @@
+//! Emoji-prefixed plain-text formatter (the default output format).
+//!
+//! # Architecture overview
+//!
+//! This formatter converts the normalized `Session` AST into a human-readable
+//! plain text file where every line begins with an emoji that classifies its
+//! content at a glance:
+//!
+//! | Emoji | Meaning                          |
+//! |-------|----------------------------------|
+//! | 📋    | Metadata / summary               |
+//! | 👤    | User message                     |
+//! | 🤖    | Assistant message                |
+//! | ✅    | Successful tool call             |
+//! | ❌    | Failed tool call                 |
+//! | ⏳    | Queue operation (sub-agent task) |
+//!
+//! # Design philosophy
+//!
+//! The output is optimized for `grep`. Each line is self-contained — the leading
+//! emoji is always the first character, making patterns like `grep "❌" file.txt`
+//! instant to write and read.
+//!
+//! The formatter is intentionally lossy in some areas:
+//! - `Thinking` blocks are suppressed (they contain internal LLM reasoning, not user-visible content)
+//! - `ToolUse` blocks are suppressed (they're paired with `ToolResult` which is shown)
+//! - Long tool summaries are pre-truncated by the parser, not the formatter
+//!
+//! # TRADE-OFFS
+//!
+//! Using Unicode escape sequences for emoji constants (`\u{1f4cb}`) rather than
+//! literal emoji in source code avoids editor encoding issues and makes the intent
+//! explicit when reading the source. The compiled output is identical.
+
 use std::io::Write;
 
 use crate::ast::*;
 use crate::error::CassioError;
 use crate::formatter::Formatter;
 
-const EMOJI_META: &str = "\u{1f4cb}";     // 📋
-const EMOJI_USER: &str = "\u{1f464}";     // 👤
+const EMOJI_META: &str = "\u{1f4cb}";      // 📋
+const EMOJI_USER: &str = "\u{1f464}";      // 👤
 const EMOJI_ASSISTANT: &str = "\u{1f916}"; // 🤖
-const EMOJI_SUCCESS: &str = "\u{2705}";   // ✅
-const EMOJI_FAILURE: &str = "\u{274c}";   // ❌
-const EMOJI_QUEUE: &str = "\u{23f3}";     // ⏳
+const EMOJI_SUCCESS: &str = "\u{2705}";    // ✅
+const EMOJI_FAILURE: &str = "\u{274c}";    // ❌
+const EMOJI_QUEUE: &str = "\u{23f3}";      // ⏳
 
+/// Formatter that produces emoji-prefixed plain text transcripts.
 pub struct EmojiTextFormatter;
 
 impl Formatter for EmojiTextFormatter {
+    /// Format a session as emoji-prefixed plain text.
+    ///
+    /// Output structure:
+    /// 1. Metadata header (session ID, project, start time, version, branch)
+    /// 2. Blank line
+    /// 3. All messages in chronological order
+    /// 4. Summary block (only when the session has at least one message)
     fn format(&self, session: &Session, writer: &mut dyn Write) -> Result<(), CassioError> {
-        // Metadata header
         format_metadata(&session.metadata, writer)?;
         writeln!(writer)?;
 
-        // Messages
         for msg in &session.messages {
             format_message(msg, writer)?;
         }
 
-        // Summary
         format_summary(&session.stats, &session.metadata, writer)?;
 
         Ok(())
     }
 }
 
+/// Emit the session header block.
+///
+/// Tool-specific fields (version for Claude, CLI version for Codex, title for
+/// OpenCode) are included only when present to avoid empty lines in the output.
 fn format_metadata(meta: &SessionMetadata, w: &mut dyn Write) -> Result<(), CassioError> {
     writeln!(w, "{EMOJI_META} Session: {}", meta.session_id)?;
     writeln!(w, "{EMOJI_META} Project: {}", meta.project_path)?;
@@ -65,6 +108,12 @@ fn format_metadata(meta: &SessionMetadata, w: &mut dyn Write) -> Result<(), Cass
     Ok(())
 }
 
+/// Emit all content blocks within a single message.
+///
+/// Role determines the emoji for text content. Thinking and ToolUse blocks are
+/// silently suppressed — thinking is internal LLM reasoning not intended for
+/// transcripts, and ToolUse is paired with the ToolResult which carries the
+/// visible output.
 fn format_message(msg: &Message, w: &mut dyn Write) -> Result<(), CassioError> {
     for block in &msg.content {
         match block {
@@ -77,10 +126,12 @@ fn format_message(msg: &Message, w: &mut dyn Write) -> Result<(), CassioError> {
                 writeln!(w, "{emoji} {text}")?;
             }
             ContentBlock::Thinking { .. } => {
-                // Skip thinking blocks in emoji-text output
+                // WHY: Thinking blocks contain extended reasoning tokens. They are
+                // not part of the conversation visible to the user and add noise.
             }
             ContentBlock::ToolUse { .. } => {
-                // Tool use is shown when we get the result
+                // WHY: Tool use is deferred — the ToolResult that follows contains
+                // both the tool name and the outcome, which is more informative.
             }
             ContentBlock::ToolResult {
                 name,
@@ -103,6 +154,14 @@ fn format_message(msg: &Message, w: &mut dyn Write) -> Result<(), CassioError> {
     Ok(())
 }
 
+/// Emit the session summary block at the end of the transcript.
+///
+/// Omitted entirely when the session has no user or assistant messages — this
+/// avoids a confusing empty summary for sessions that only contain tool calls
+/// or were parsed from empty/truncated log files.
+///
+/// The "Tool calls" label is adjusted to "Function calls" for Codex sessions
+/// to match the terminology used in that tool's own UI.
 fn format_summary(
     stats: &SessionStats,
     metadata: &SessionMetadata,
@@ -197,16 +256,23 @@ fn format_summary(
     Ok(())
 }
 
+/// Abbreviate a Claude model identifier to a compact, readable name.
+///
+/// Transforms `claude-opus-4-5-20251101` → `opus-4.5`. Non-Claude model names
+/// (e.g., OpenAI models like `gpt-4o`) and the special `"<synthetic>"` marker
+/// are returned unchanged or mapped to `"synthetic"` respectively.
+///
+/// WHY: Full Claude model identifiers include trailing date stamps (e.g.,
+/// `20251101`) that are not useful to readers and make the line visually noisy.
 fn shorten_model_name(model: &str) -> String {
     if model == "<synthetic>" {
         return "synthetic".to_string();
     }
 
-    // claude-opus-4-5-20251101 -> opus-4.5
-    // claude-sonnet-4-5-20250929 -> sonnet-4.5
+    // Pattern: claude-{name}-{major}-{minor}-{date}
+    // Target:  {name}-{major}.{minor}
     let parts: Vec<&str> = model.split('-').collect();
     if parts.len() >= 4 && parts[0] == "claude" {
-        // Try to find name-major-minor pattern
         if let (Ok(major), Ok(minor)) = (
             parts[2].parse::<u32>(),
             parts[3].parse::<u32>(),
@@ -217,6 +283,10 @@ fn shorten_model_name(model: &str) -> String {
     model.to_string()
 }
 
+/// Format a duration in seconds as a human-readable string.
+///
+/// Uses the largest non-zero unit: hours+minutes, minutes only, or seconds.
+/// Negative durations (clock skew) are clamped to zero.
 fn format_duration(seconds: i64) -> String {
     if seconds < 0 {
         return "0s".to_string();
@@ -235,6 +305,9 @@ fn format_duration(seconds: i64) -> String {
     }
 }
 
+/// Format a token count with SI-style suffixes (K, M).
+///
+/// Keeps the output compact — `1500` becomes `1.5K` rather than `1,500`.
 fn format_tokens(n: u64) -> String {
     if n >= 1_000_000 {
         format!("{:.1}M", n as f64 / 1_000_000.0)

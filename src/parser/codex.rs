@@ -1,3 +1,47 @@
+//! Parser for OpenAI Codex session logs (`rollout-*.jsonl` format).
+//!
+//! # System context
+//!
+//! Codex writes one JSON record per line to `~/.codex/sessions/**/rollout-*.jsonl`.
+//! Records use a uniform envelope: `{ "timestamp": "...", "type": "...", "payload": {...} }`.
+//! The `type` field determines the shape of `payload`:
+//!
+//! | Record type    | Purpose                                              |
+//! |----------------|------------------------------------------------------|
+//! | `session_meta` | One-time header with session ID, cwd, version, git  |
+//! | `event_msg`    | User input (`user_message` subtype)                  |
+//! | `response_item`| Assistant output, function calls, and outputs        |
+//! | `turn_context` | Model name for the upcoming turn                     |
+//!
+//! # Tool call handling
+//!
+//! Codex calls them "function calls" rather than "tool calls" (reflecting the
+//! OpenAI API's function-calling interface). The interaction spans two records:
+//! - `response_item` with `type: "function_call"` — the invocation
+//! - `response_item` with `type: "function_call_output"` — the outcome
+//!
+//! `pending_functions: HashMap<call_id, (name, args_json)>` tracks in-flight calls.
+//! Error detection inspects `exit_code` in the output JSON string rather than a
+//! boolean flag.
+//!
+//! # User message cleanup
+//!
+//! Codex embeds file contents and context blocks directly in the user message string:
+//! - `<context ref="...">...</context>` — file or snippet context blocks
+//! - `[@filename](url)` — inline file references
+//!
+//! These are stripped before adding the text to the AST so transcripts contain
+//! only the actual user intent.
+//!
+//! # TRADE-OFFS
+//!
+//! - `response_item` records with `role: "user"` are skipped because they duplicate
+//!   content already captured by the `event_msg` records. Keeping only `event_msg`
+//!   avoids double-counting user messages.
+//! - File read tracking uses simple string pattern matching on shell commands
+//!   (`cat`, `less`, etc.) rather than full command parsing. This catches the most
+//!   common cases but will miss reads via pipes or aliases.
+
 use std::collections::HashMap;
 use std::io::BufRead;
 use std::path::Path;
@@ -10,6 +54,7 @@ use crate::ast::*;
 use crate::error::CassioError;
 use crate::parser::Parser;
 
+/// Parser for OpenAI Codex `rollout-*.jsonl` session logs.
 pub struct CodexParser;
 
 impl Parser for CodexParser {
@@ -21,11 +66,20 @@ impl Parser for CodexParser {
 }
 
 impl CodexParser {
+    /// Parse a Codex session from an arbitrary line iterator.
+    ///
+    /// WHY: Same rationale as `ClaudeParser::parse_from_lines` — testability
+    /// without filesystem access, and stdin reuse.
     pub fn parse_from_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioError> {
         parse_lines(lines)
     }
 }
 
+/// Top-level envelope shared by every record in a Codex JSONL file.
+///
+/// WHY: All Codex records use this same three-field envelope regardless of type.
+/// Deserializing to a typed struct first, then dispatching on `record_type`, is
+/// cleaner than parsing every record as a raw `Value`.
 #[derive(Deserialize)]
 struct CodexRecord {
     timestamp: String,
@@ -34,12 +88,28 @@ struct CodexRecord {
     payload: Value,
 }
 
+/// Core parsing routine for Codex JSONL logs.
+///
+/// PHASE 1: LINE PROCESSING
+/// Parse each non-empty line as a `CodexRecord` envelope, track timestamps for
+/// duration, and dispatch on `record_type`.
+///
+/// PHASE 2: RECORD DISPATCH
+/// - `session_meta` → initialize `SessionMetadata` from the payload
+/// - `response_item` → route to assistant message, function call, or output handling
+/// - `event_msg` → extract and clean user messages
+/// - `turn_context` → emit `ModelChange` events when the model name shifts
+///
+/// PHASE 3: FINALIZATION
+/// Patch `metadata.model` with the last seen model name, compute duration.
 fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioError> {
     let mut metadata: Option<SessionMetadata> = None;
     let mut messages: Vec<Message> = Vec::new();
     let mut stats = SessionStats::default();
     let mut current_model: Option<String> = None;
-    let mut pending_functions: HashMap<String, (String, String)> = HashMap::new(); // call_id -> (name, args_json)
+    // WHY: Maps call_id → (function_name, args_json_string) so that when the
+    // function_call_output arrives, we can reconstruct a readable summary.
+    let mut pending_functions: HashMap<String, (String, String)> = HashMap::new();
     let mut first_timestamp: Option<DateTime<Utc>> = None;
     let mut last_timestamp: Option<DateTime<Utc>> = None;
 
@@ -265,6 +335,10 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
     })
 }
 
+/// Convert a Codex function name and JSON arguments string into a compact summary.
+///
+/// Mirrors `format_tool_input` in the Claude parser but uses Codex's function
+/// naming conventions (`shell`, `read_file`, `write_file`, `update_plan`).
 pub(crate) fn format_codex_function(name: &str, args_json: &str) -> String {
     let args: Value = serde_json::from_str(args_json).unwrap_or(Value::Object(Default::default()));
 

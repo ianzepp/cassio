@@ -1,3 +1,52 @@
+//! Parser for OpenCode session logs (fragmented JSON storage layout).
+//!
+//! # System context
+//!
+//! OpenCode's storage layout is radically different from Claude and Codex. Instead
+//! of a single JSONL file per session, data is fragmented across three directory
+//! hierarchies under `~/.local/share/opencode/storage/`:
+//!
+//! ```text
+//! storage/
+//!   session/<project_id>/<session_id>.json    — session metadata
+//!   message/<session_id>/<message_id>.json    — one file per message
+//!   part/<message_id>/<part_id>.json          — one file per content part
+//! ```
+//!
+//! The session ID is an opaque `ses_*` string. Messages and parts are also
+//! opaque IDs with no embedded timestamp, so the parser sorts messages by their
+//! `time.created` field after loading them all.
+//!
+//! # Design philosophy
+//!
+//! The parser uses three loading phases:
+//! 1. Load session metadata from the `session/` tree
+//! 2. Load all messages from `message/<ses_id>/` and sort by creation time
+//! 3. For each message, load its parts from `part/<msg_id>/`
+//!
+//! Parts (the actual content blocks) are processed inline while iterating sorted
+//! messages, so the final message list is already in chronological order.
+//!
+//! # Entry point
+//!
+//! `OpenCodeParser::parse_session` accepts two kinds of paths:
+//! - A path ending in `message/ses_*` — directly identifies a session directory
+//! - A storage root directory — the parser enumerates sessions and parses the first
+//!
+//! The discover module always produces `message/ses_*` paths, so the storage-root
+//! path is mainly for manual or test use.
+//!
+//! # TRADE-OFFS
+//!
+//! - Loading all message files eagerly (rather than streaming) simplifies the sort
+//!   step. For very large sessions (thousands of messages) this could use significant
+//!   memory. In practice OpenCode sessions are short.
+//! - When no session metadata file is found, the parser falls back to a minimal
+//!   `OCSession` with just the ID rather than failing. This handles the case where
+//!   the `session/` directory is missing or the project subdirectory name is unknown.
+//! - Timestamps in OpenCode are Unix milliseconds stored as `f64`, not ISO strings.
+//!   `timestamp_from_millis` converts them to `DateTime<Utc>`.
+
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -9,15 +58,16 @@ use crate::ast::*;
 use crate::error::CassioError;
 use crate::parser::Parser;
 
+/// Parser for OpenCode's fragmented JSON session storage.
 pub struct OpenCodeParser;
 
 impl Parser for OpenCodeParser {
+    /// Parse a single OpenCode session.
+    ///
+    /// Accepts either:
+    /// - A `message/ses_*` path (the canonical form produced by discovery), or
+    /// - A storage root directory (enumerates sessions and parses the first one found)
     fn parse_session(&self, path: &Path) -> Result<Session, CassioError> {
-        // For OpenCode, path should be the storage directory and we need a session ID.
-        // If path is a directory containing session/message/part subdirs, treat it as storage root.
-        // If path points to a specific session directory under message/, derive session ID.
-
-        // Heuristic: if path contains "message/<ses_...>", it's a message dir
         let path_str = path.to_string_lossy();
 
         if path_str.contains("/message/ses_") {
@@ -54,14 +104,23 @@ impl Parser for OpenCodeParser {
     }
 }
 
+// ── OpenCode JSON data structures ────────────────────────────────────────────
+//
+// These structs model OpenCode's on-disk JSON format. All fields are `Option`
+// because OpenCode's schema evolves and we want to degrade gracefully when
+// fields are absent rather than failing the whole parse.
+
+/// Session metadata from `session/<project_id>/<session_id>.json`.
 #[derive(Deserialize)]
 struct OCSession {
     id: String,
+    /// Working directory for the session (the user's project path).
     directory: Option<String>,
     title: Option<String>,
     time: Option<OCTime>,
 }
 
+/// Unix millisecond timestamps recorded by OpenCode.
 #[derive(Deserialize)]
 #[allow(dead_code)]
 struct OCTime {
@@ -69,6 +128,7 @@ struct OCTime {
     updated: Option<f64>,
 }
 
+/// A single conversation message from `message/<session_id>/<message_id>.json`.
 #[derive(Deserialize)]
 struct OCMessage {
     id: String,
@@ -80,12 +140,14 @@ struct OCMessage {
     tokens: Option<OCTokens>,
 }
 
+/// Per-message timing; `completed` is used when available, falling back to `created`.
 #[derive(Deserialize)]
 struct OCMsgTime {
     created: Option<f64>,
     completed: Option<f64>,
 }
 
+/// Token usage recorded per message by OpenCode.
 #[derive(Deserialize)]
 struct OCTokens {
     input: Option<u64>,
@@ -93,22 +155,31 @@ struct OCTokens {
     cache: Option<OCCache>,
 }
 
+/// Cache token breakdown; `write` corresponds to `cache_creation_tokens` in the AST.
 #[derive(Deserialize)]
 struct OCCache {
     read: Option<u64>,
     write: Option<u64>,
 }
 
+/// A content part from `part/<message_id>/<part_id>.json`.
+///
+/// Parts are the leaf content units. A single message may have many parts:
+/// text paragraphs, tool invocations, and tool outcomes are all separate part files.
 #[derive(Deserialize)]
 struct OCPart {
     #[serde(rename = "type")]
     part_type: Option<String>,
     text: Option<String>,
+    /// When `true`, this text part was injected by OpenCode (e.g., context blocks)
+    /// and should not appear in the transcript.
     synthetic: Option<bool>,
+    /// Tool name for `type: "tool"` parts.
     tool: Option<String>,
     state: Option<OCPartState>,
 }
 
+/// Outcome state for a tool part.
 #[derive(Deserialize)]
 #[allow(dead_code)]
 struct OCPartState {
@@ -118,17 +189,37 @@ struct OCPartState {
     metadata: Option<OCPartMeta>,
 }
 
+/// OS-level metadata for a completed tool execution.
 #[derive(Deserialize)]
 struct OCPartMeta {
+    /// Exit code; non-zero values indicate failure.
     exit: Option<i32>,
     description: Option<String>,
 }
 
+/// Load and assemble a complete session from the OpenCode storage layout.
+///
+/// PHASE 1: SESSION METADATA
+/// Search the `session/` tree for `<session_id>.json`. Fall back to a minimal
+/// placeholder if not found (handles cases where the project directory is unknown).
+///
+/// PHASE 2: MESSAGE LOADING AND SORTING
+/// Read all `*.json` files from `message/<session_id>/`. Sort by `time.created`
+/// because the filesystem does not guarantee any particular order.
+///
+/// PHASE 3: PART LOADING
+/// For each message, eagerly load all parts from `part/<message_id>/` into a
+/// `HashMap<message_id, Vec<OCPart>>`. This pre-loads all content before AST
+/// construction, keeping the AST-building loop simple.
+///
+/// PHASE 4: AST CONSTRUCTION
+/// Iterate sorted messages, emitting `ModelChange`, `User`, and `Assistant`
+/// message nodes. Tool stats and token totals are accumulated here.
 fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, CassioError> {
-    // Load session file
+    // PHASE 1: SESSION METADATA
     let session_data = find_session_file(storage_dir, session_id)?;
 
-    // Load messages
+    // PHASE 2: MESSAGE LOADING AND SORTING
     let messages_dir = storage_dir.join("message").join(session_id);
     let mut oc_messages = load_messages(&messages_dir)?;
     oc_messages.sort_by(|a, b| {
@@ -137,7 +228,7 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
         ta.partial_cmp(&tb).unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Load parts per message
+    // PHASE 3: PART LOADING
     let mut parts_map: HashMap<String, Vec<OCPart>> = HashMap::new();
     for msg in &oc_messages {
         let parts_dir = storage_dir.join("part").join(&msg.id);
@@ -149,7 +240,7 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
         }
     }
 
-    // Build AST
+    // PHASE 4: AST CONSTRUCTION
     let started_at = session_data
         .time
         .as_ref()
@@ -365,6 +456,15 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
     })
 }
 
+/// Search the `session/<project_id>/` tree for a session metadata file.
+///
+/// WHY: OpenCode nests session files under an opaque project ID directory that
+/// cassio does not know in advance. The search iterates all project subdirectories
+/// to find the matching `<session_id>.json`.
+///
+/// Falls back to a minimal placeholder when no file is found rather than erroring,
+/// so that sessions with no metadata file (e.g., very old or incomplete sessions)
+/// can still be parsed from their messages and parts.
 fn find_session_file(storage_dir: &Path, session_id: &str) -> Result<OCSession, CassioError> {
     let session_dir = storage_dir.join("session");
     if session_dir.is_dir() {
@@ -386,7 +486,7 @@ fn find_session_file(storage_dir: &Path, session_id: &str) -> Result<OCSession, 
         }
     }
 
-    // Fallback: construct minimal session data
+    // EDGE: No session file found — return a minimal placeholder so parsing can continue.
     Ok(OCSession {
         id: session_id.to_string(),
         directory: None,
@@ -395,6 +495,10 @@ fn find_session_file(storage_dir: &Path, session_id: &str) -> Result<OCSession, 
     })
 }
 
+/// Load all message JSON files from a session's message directory.
+///
+/// Files that fail to deserialize as `OCMessage` are silently skipped. This
+/// handles malformed or partial writes without aborting the parse.
 fn load_messages(dir: &Path) -> Result<Vec<OCMessage>, CassioError> {
     let mut messages = Vec::new();
     if !dir.is_dir() {
@@ -414,6 +518,9 @@ fn load_messages(dir: &Path) -> Result<Vec<OCMessage>, CassioError> {
     Ok(messages)
 }
 
+/// Load all content part JSON files for a single message.
+///
+/// Parts that fail to deserialize are silently skipped.
 fn load_parts(dir: &Path) -> Result<Vec<OCPart>, CassioError> {
     let mut parts = Vec::new();
     if !dir.is_dir() {
@@ -433,6 +540,11 @@ fn load_parts(dir: &Path) -> Result<Vec<OCPart>, CassioError> {
     Ok(parts)
 }
 
+/// Convert an OpenCode Unix millisecond timestamp to `DateTime<Utc>`.
+///
+/// WHY: OpenCode stores timestamps as `f64` milliseconds rather than ISO strings.
+/// Using `div_euclid` / `rem_euclid` rather than plain division ensures correct
+/// handling of negative timestamps (pre-epoch) without panicking on overflow.
 fn timestamp_from_millis(ms: i64) -> DateTime<Utc> {
     let secs = ms.div_euclid(1000);
     let nsecs = (ms.rem_euclid(1000) * 1_000_000) as u32;
