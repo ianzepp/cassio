@@ -6,4 +6,5 @@ pub mod error;
 pub mod formatter;
 pub mod git;
 pub mod parser;
+pub mod pricing;
 pub mod summary;
