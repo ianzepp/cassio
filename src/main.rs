@@ -66,6 +66,14 @@ struct Cli {
     /// Regenerate even if output is newer than input
     #[arg(long, global = true)]
     force: bool,
+
+    /// Ignore config file; all options must be explicit
+    #[arg(long, global = true)]
+    detached: bool,
+
+    /// Only process sessions whose working directory is under this path
+    #[arg(long, global = true)]
+    filter_dir: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -176,7 +184,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             return Ok(());
         }
         Some(Command::Summary { detailed }) => {
-            let config = Config::load();
+            let config = if cli.detached { Config::default() } else { Config::load() };
             let dir = cli
                 .output
                 .clone()
@@ -189,7 +197,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             return cassio::summary::run_summary(&dir, detailed);
         }
         Some(Command::Compact { action }) => {
-            let config = Config::load();
+            let config = if cli.detached { Config::default() } else { Config::load() };
             let config_output = config.output_path();
             let default_model = config.model.clone().unwrap_or_else(|| "llama3.1".to_string());
             let default_provider = config.provider.clone().unwrap_or_else(|| "ollama".to_string());
@@ -230,7 +238,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                             eprintln!("\nProcessing {} ({})...", tool, path.display());
                             let files = discover::find_session_files(path, Some(*tool));
                             eprintln!("Found {} session files", files.len());
-                            process_file_list(&files, &output_dir, cli.force, &*formatter)?;
+                            process_file_list(&files, &output_dir, cli.force, &*formatter, cli.filter_dir.as_deref())?;
                         }
                     }
 
@@ -305,7 +313,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
     }
 
     // Process mode — load config and merge
-    let config = Config::load();
+    let config = if cli.detached { Config::default() } else { Config::load() };
 
     // Merge output: CLI arg → config value
     if cli.output.is_none() {
@@ -331,19 +339,28 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
 
     match cli.path {
         Some(ref path) if path.is_dir() => run_batch_mode(path, &cli, &config, &*formatter),
-        Some(ref path) if path.is_file() => run_single_file(path, &*formatter),
+        Some(ref path) if path.is_file() => run_single_file(path, &*formatter, cli.filter_dir.as_deref()),
         Some(ref path) => Err(CassioError::Other(format!(
             "Path not found: {}",
             path.display()
         ))),
-        None => run_stdin(&*formatter),
+        None => run_stdin(&*formatter, cli.filter_dir.as_deref()),
     }
 }
 
 /// Parse and format a single session file, writing output to stdout.
-fn run_single_file(path: &Path, formatter: &dyn Formatter) -> Result<(), CassioError> {
+fn run_single_file(path: &Path, formatter: &dyn Formatter, filter_dir: Option<&Path>) -> Result<(), CassioError> {
     let parser = cassio::parser::detect_parser(path)?;
     let session = parser.parse_session(path)?;
+
+    if let Some(filter) = filter_dir {
+        let filter_str = filter.to_string_lossy();
+        if !session.metadata.project_path.starts_with(filter_str.as_ref()) {
+            eprintln!("Skipping: session project path '{}' does not match --filter-dir", session.metadata.project_path);
+            return Ok(());
+        }
+    }
+
     let stdout = io::stdout();
     let mut writer = stdout.lock();
     formatter.format(&session, &mut writer)?;
@@ -356,7 +373,7 @@ fn run_single_file(path: &Path, formatter: &dyn Formatter) -> Result<(), CassioE
 /// requires peeking at the first line, but the parser needs all lines. An
 /// alternative would be a two-pass approach, but that would require the input
 /// to be seekable (stdin is not).
-fn run_stdin(formatter: &dyn Formatter) -> Result<(), CassioError> {
+fn run_stdin(formatter: &dyn Formatter, filter_dir: Option<&Path>) -> Result<(), CassioError> {
     let stdin = io::stdin();
     let reader = stdin.lock();
     let lines: Vec<String> = reader.lines().map(|l| l.unwrap_or_default()).collect();
@@ -379,6 +396,14 @@ fn run_stdin(formatter: &dyn Formatter) -> Result<(), CassioError> {
     } else {
         cassio::parser::claude::ClaudeParser::parse_from_lines(lines.into_iter())?
     };
+
+    if let Some(filter) = filter_dir {
+        let filter_str = filter.to_string_lossy();
+        if !session.metadata.project_path.starts_with(filter_str.as_ref()) {
+            eprintln!("Skipping: session project path '{}' does not match --filter-dir", session.metadata.project_path);
+            return Ok(());
+        }
+    }
 
     let stdout = io::stdout();
     let mut writer = stdout.lock();
@@ -406,7 +431,7 @@ fn run_batch_mode(
     let total = files.len();
     eprintln!("Found {total} session files");
 
-    process_file_list(&files, output_dir, cli.force, formatter)?;
+    process_file_list(&files, output_dir, cli.force, formatter, cli.filter_dir.as_deref())?;
 
     cassio::git::auto_commit_and_push(
         output_dir,
@@ -452,7 +477,7 @@ fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result
         let total = files.len();
         eprintln!("Found {total} session files");
 
-        process_file_list(&files, output_dir, cli.force, formatter)?;
+        process_file_list(&files, output_dir, cli.force, formatter, cli.filter_dir.as_deref())?;
     }
 
     cassio::git::auto_commit_and_push(
@@ -487,6 +512,7 @@ fn process_file_list(
     output_dir: &Path,
     force: bool,
     formatter: &dyn Formatter,
+    filter_dir: Option<&Path>,
 ) -> Result<(), CassioError> {
     let total = files.len();
     let mut processed = 0u32;
@@ -527,6 +553,14 @@ fn process_file_list(
                 if session.stats.user_messages == 0 && session.stats.assistant_messages == 0 {
                     skipped += 1;
                     continue;
+                }
+
+                if let Some(filter) = filter_dir {
+                    let filter_str = filter.to_string_lossy();
+                    if !session.metadata.project_path.starts_with(filter_str.as_ref()) {
+                        skipped += 1;
+                        continue;
+                    }
                 }
 
                 if let Some(parent) = out_path.parent() {
