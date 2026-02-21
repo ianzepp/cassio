@@ -265,7 +265,23 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
             }
             "event_msg" => {
                 let payload_type = record.payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
-                if payload_type == "user_message" {
+                if payload_type == "token_count" {
+                    if let Some(info) = record.payload.get("info") {
+                        if let Some(total) = info.get("total_token_usage") {
+                            let input = total.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let cached = total.get("cached_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let output = total.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            let reasoning = total.get("reasoning_output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+                            // total_token_usage is cumulative, so always overwrite with the latest
+                            stats.total_tokens = TokenUsage {
+                                input_tokens: input,
+                                output_tokens: output + reasoning,
+                                cache_read_tokens: cached,
+                                cache_creation_tokens: 0,
+                            };
+                        }
+                    }
+                } else if payload_type == "user_message" {
                     if let Some(msg) = record.payload.get("message").and_then(|v| v.as_str()) {
                         // Clean up message - remove context blocks and file refs
                         let mut text = msg.to_string();
@@ -590,6 +606,57 @@ mod tests {
     fn test_format_codex_function_unknown() {
         let result = format_codex_function("something", r#"{"key":"val"}"#);
         assert!(result.contains("key"));
+    }
+
+    #[test]
+    fn test_token_count_extraction() {
+        let lines = vec![
+            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
+            make_record("event_msg", "2025-01-15T10:00:01Z", serde_json::json!({
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": 5402,
+                        "cached_input_tokens": 3072,
+                        "output_tokens": 237,
+                        "reasoning_output_tokens": 192,
+                        "total_tokens": 5639
+                    }
+                }
+            })),
+            // A later token_count should overwrite (cumulative)
+            make_record("event_msg", "2025-01-15T10:00:05Z", serde_json::json!({
+                "type": "token_count",
+                "info": {
+                    "total_token_usage": {
+                        "input_tokens": 10000,
+                        "cached_input_tokens": 6000,
+                        "output_tokens": 500,
+                        "reasoning_output_tokens": 300,
+                        "total_tokens": 16800
+                    }
+                }
+            })),
+        ];
+        let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
+        assert_eq!(session.stats.total_tokens.input_tokens, 10000);
+        assert_eq!(session.stats.total_tokens.cache_read_tokens, 6000);
+        assert_eq!(session.stats.total_tokens.output_tokens, 800); // 500 + 300 reasoning
+    }
+
+    #[test]
+    fn test_token_count_null_info() {
+        let lines = vec![
+            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
+            make_record("event_msg", "2025-01-15T10:00:01Z", serde_json::json!({
+                "type": "token_count",
+                "info": null,
+                "rate_limits": {}
+            })),
+        ];
+        let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
+        assert_eq!(session.stats.total_tokens.input_tokens, 0);
+        assert_eq!(session.stats.total_tokens.output_tokens, 0);
     }
 
     #[test]

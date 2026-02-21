@@ -74,6 +74,10 @@ struct Cli {
     /// Only process sessions whose working directory is under this path
     #[arg(long, global = true)]
     filter_dir: Option<PathBuf>,
+
+    /// Show what would be processed without writing any files
+    #[arg(long, global = true)]
+    dry_run: bool,
 }
 
 #[derive(Subcommand)]
@@ -241,7 +245,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                             eprintln!("\nProcessing {} ({})...", tool, path.display());
                             let files = discover::find_session_files(path, Some(*tool));
                             eprintln!("Found {} session files", files.len());
-                            process_file_list(&files, &output_dir, cli.force, &*formatter, cli.filter_dir.as_deref())?;
+                            process_file_list(&files, &output_dir, cli.force, &*formatter, cli.filter_dir.as_deref(), cli.dry_run)?;
                         }
                     }
 
@@ -434,13 +438,15 @@ fn run_batch_mode(
     let total = files.len();
     eprintln!("Found {total} session files");
 
-    process_file_list(&files, output_dir, cli.force, formatter, cli.filter_dir.as_deref())?;
+    process_file_list(&files, output_dir, cli.force, formatter, cli.filter_dir.as_deref(), cli.dry_run)?;
 
-    cassio::git::auto_commit_and_push(
-        output_dir,
-        &format!("cassio batch ({})", Local::now().format("%Y-%m-%d")),
-        &config.git,
-    )?;
+    if !cli.dry_run {
+        cassio::git::auto_commit_and_push(
+            output_dir,
+            &format!("cassio batch ({})", Local::now().format("%Y-%m-%d")),
+            &config.git,
+        )?;
+    }
 
     Ok(())
 }
@@ -480,14 +486,16 @@ fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result
         let total = files.len();
         eprintln!("Found {total} session files");
 
-        process_file_list(&files, output_dir, cli.force, formatter, cli.filter_dir.as_deref())?;
+        process_file_list(&files, output_dir, cli.force, formatter, cli.filter_dir.as_deref(), cli.dry_run)?;
     }
 
-    cassio::git::auto_commit_and_push(
-        output_dir,
-        &format!("cassio --all ({})", Local::now().format("%Y-%m-%d")),
-        &config.git,
-    )?;
+    if !cli.dry_run {
+        cassio::git::auto_commit_and_push(
+            output_dir,
+            &format!("cassio --all ({})", Local::now().format("%Y-%m-%d")),
+            &config.git,
+        )?;
+    }
 
     eprintln!("\nAll done.");
     Ok(())
@@ -516,6 +524,7 @@ fn process_file_list(
     force: bool,
     formatter: &dyn Formatter,
     filter_dir: Option<&Path>,
+    dry_run: bool,
 ) -> Result<(), CassioError> {
     let total = files.len();
     let mut processed = 0u32;
@@ -566,12 +575,17 @@ fn process_file_list(
                     }
                 }
 
-                if let Some(parent) = out_path.parent() {
-                    fs::create_dir_all(parent)?;
+                if dry_run {
+                    eprintln!("  would write: {}", out_path.display());
+                    processed += 1;
+                } else {
+                    if let Some(parent) = out_path.parent() {
+                        fs::create_dir_all(parent)?;
+                    }
+                    let mut file = fs::File::create(&out_path)?;
+                    formatter.format(&session, &mut file)?;
+                    processed += 1;
                 }
-                let mut file = fs::File::create(&out_path)?;
-                formatter.format(&session, &mut file)?;
-                processed += 1;
             }
             Err(e) => {
                 eprintln!("\r  warning: skipping {}: {e}", path.display());
