@@ -137,7 +137,10 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                             stats.tool_calls += 1;
 
                             let output = record.payload.get("output").and_then(|v| v.as_str()).unwrap_or("");
-                            let is_error = output.contains("\"exit_code\":") && !output.contains("\"exit_code\":0");
+                            let is_error = serde_json::from_str::<Value>(output)
+                                .ok()
+                                .and_then(|v| v.get("exit_code")?.as_i64())
+                                .is_some_and(|code| code != 0);
                             if is_error {
                                 stats.tool_errors += 1;
                             }

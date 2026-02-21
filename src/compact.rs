@@ -40,7 +40,7 @@ pub fn run_dailies(
     let mut failed = 0u32;
 
     for (i, (day, files)) in to_process.iter().enumerate() {
-        let month = &day[..7];
+        let month = day.get(..7).unwrap_or("unknown");
         let relative = format!("{month}/{day}");
         eprint!("dailies: [{} of {total}] {relative}...", i + 1);
 
@@ -271,9 +271,9 @@ fn find_pending_days(
             None => continue,
         };
 
-        if name.ends_with(".txt") && name.len() >= 10 {
+        if name.ends_with(".txt") && name.len() >= 10 && name.is_char_boundary(10) {
             let date = &name[..10];
-            if date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-' {
+            if date.len() == 10 && date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-' {
                 by_date
                     .entry(date.to_string())
                     .or_default()
@@ -284,7 +284,7 @@ fn find_pending_days(
 
     let mut pending = Vec::new();
     for (date, mut files) in by_date {
-        let month = &date[..7];
+        let month = date.get(..7).unwrap_or("unknown");
         let compaction_path = output_dir.join(month).join(format!("{date}.compaction.md"));
         if compaction_path.exists() {
             continue;
@@ -395,7 +395,7 @@ fn build_monthly_input(prompt: &str, month: &str, items: &[(String, String)]) ->
 /// Split compaction contents into chunks that fit within MAX_INPUT_BYTES.
 /// Each chunk is a slice of (filename, content) pairs.
 fn build_chunks(contents: &[(String, String)], prompt_overhead: usize) -> Vec<Vec<(String, String)>> {
-    let budget = MAX_INPUT_BYTES - prompt_overhead;
+    let budget = MAX_INPUT_BYTES.saturating_sub(prompt_overhead);
     let mut chunks: Vec<Vec<(String, String)>> = Vec::new();
     let mut current_chunk: Vec<(String, String)> = Vec::new();
     let mut current_size: usize = 0;

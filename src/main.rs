@@ -465,12 +465,15 @@ fn process_file_list(
                     continue;
                 }
 
-                fs::create_dir_all(out_path.parent().unwrap())?;
+                if let Some(parent) = out_path.parent() {
+                    fs::create_dir_all(parent)?;
+                }
                 let mut file = fs::File::create(&out_path)?;
                 formatter.format(&session, &mut file)?;
                 processed += 1;
             }
-            Err(_) => {
+            Err(e) => {
+                eprintln!("\r  warning: skipping {}: {e}", path.display());
                 skipped += 1;
             }
         }

@@ -257,6 +257,7 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
             }
         } else if role_str == "assistant" {
             let mut blocks = Vec::new();
+            let mut has_text = false;
 
             for part in &msg_parts {
                 let pt = part.part_type.as_deref().unwrap_or("");
@@ -268,7 +269,7 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
                                 blocks.push(ContentBlock::Text {
                                     text: trimmed.to_string(),
                                 });
-                                stats.assistant_messages += 1;
+                                has_text = true;
                             }
                         }
                     }
@@ -322,6 +323,10 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
             }
 
             if !blocks.is_empty() {
+                if has_text {
+                    stats.assistant_messages += 1;
+                }
+
                 let usage = oc_msg.tokens.as_ref().map(|t| TokenUsage {
                     input_tokens: t.input.unwrap_or(0),
                     output_tokens: t.output.unwrap_or(0),
@@ -429,7 +434,7 @@ fn load_parts(dir: &Path) -> Result<Vec<OCPart>, CassioError> {
 }
 
 fn timestamp_from_millis(ms: i64) -> DateTime<Utc> {
-    let secs = ms / 1000;
-    let nsecs = ((ms % 1000) * 1_000_000) as u32;
+    let secs = ms.div_euclid(1000);
+    let nsecs = (ms.rem_euclid(1000) * 1_000_000) as u32;
     Utc.timestamp_opt(secs, nsecs).single().unwrap_or_else(Utc::now)
 }
