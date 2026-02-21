@@ -4,6 +4,7 @@ use std::path::Path;
 use walkdir::WalkDir;
 
 use crate::error::CassioError;
+use crate::pricing;
 
 /// Stats parsed from a single transcript .txt file.
 #[derive(Default)]
@@ -11,6 +12,7 @@ struct TranscriptStats {
     tool_name: String,
     date: String,       // YYYY-MM-DD
     project: String,
+    model: Option<String>,
     user_msgs: u32,
     asst_msgs: u32,
     tool_ok: u32,
@@ -31,6 +33,7 @@ struct Aggregate {
     input_tokens: u64,
     output_tokens: u64,
     duration_secs: i64,
+    cost: f64,
 }
 
 impl Aggregate {
@@ -43,6 +46,12 @@ impl Aggregate {
         self.input_tokens += s.input_tokens;
         self.output_tokens += s.output_tokens;
         self.duration_secs += s.duration_secs;
+        self.cost += pricing::estimate_cost(
+            s.model.as_deref(),
+            s.input_tokens,
+            s.output_tokens,
+            None,
+        ).unwrap_or(0.0);
     }
 
     fn add_agg(&mut self, other: &Aggregate) {
@@ -54,11 +63,12 @@ impl Aggregate {
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
         self.duration_secs += other.duration_secs;
+        self.cost += other.cost;
     }
 }
 
 /// Run summary: regular (month×tool) or detailed (per-project).
-pub fn run_summary(dir: &Path, detailed: bool) -> Result<(), CassioError> {
+pub fn run_summary(dir: &Path, detailed: bool, daily: bool) -> Result<(), CassioError> {
     let stats = collect_stats(dir)?;
 
     if stats.is_empty() {
@@ -68,7 +78,9 @@ pub fn run_summary(dir: &Path, detailed: bool) -> Result<(), CassioError> {
 
     eprintln!("Scanned {} transcript files", stats.len());
 
-    if detailed {
+    if daily {
+        print_daily(&stats);
+    } else if detailed {
         print_detailed(&stats);
     } else {
         print_regular(&stats);
@@ -126,6 +138,9 @@ fn parse_transcript_stats(
         if let Some(rest) = strip_emoji_prefix(line, "📋") {
             if let Some(val) = rest.strip_prefix(" Project: ") {
                 stats.project = val.to_string();
+            } else if let Some(val) = rest.strip_prefix(" Model: ") {
+                // Keep the last model seen (sessions may switch models mid-way)
+                stats.model = Some(val.to_string());
             } else if let Some(val) = rest.strip_prefix(" Duration: ") {
                 stats.duration_secs = parse_duration(val);
             } else if let Some(val) = rest.strip_prefix(" Messages: ") {
@@ -213,13 +228,13 @@ fn print_regular(stats: &[TranscriptStats]) {
     for tool in &tools {
         print!(" {tool} |");
     }
-    println!(" Total | Tokens | Duration |");
+    println!(" Total | Tokens | Cost | Duration |");
 
     print!("|-------|");
     for _ in &tools {
         print!(" ---: |");
     }
-    println!(" ---: | ---: | ---: |");
+    println!(" ---: | ---: | ---: | ---: |");
 
     // Rows
     let mut tool_totals: BTreeMap<String, Aggregate> = BTreeMap::new();
@@ -229,6 +244,7 @@ fn print_regular(stats: &[TranscriptStats]) {
         print!("| {month} |");
         let mut month_sessions: u32 = 0;
         let mut month_tokens: u64 = 0;
+        let mut month_cost: f64 = 0.0;
         let mut month_duration: i64 = 0;
 
         for tool in &tools {
@@ -237,6 +253,7 @@ fn print_regular(stats: &[TranscriptStats]) {
                 print!(" {} |", agg.sessions);
                 month_sessions += agg.sessions;
                 month_tokens += agg.input_tokens + agg.output_tokens;
+                month_cost += agg.cost;
                 month_duration += agg.duration_secs;
                 tool_totals.entry(tool.clone()).or_default().add_agg(agg);
             } else {
@@ -246,12 +263,14 @@ fn print_regular(stats: &[TranscriptStats]) {
 
         grand_total.sessions += month_sessions;
         grand_total.input_tokens += month_tokens;
+        grand_total.cost += month_cost;
         grand_total.duration_secs += month_duration;
 
         println!(
-            " {} | {} | {} |",
+            " {} | {} | {} | {} |",
             month_sessions,
             format_tokens(month_tokens),
+            pricing::format_cost(month_cost),
             format_duration(month_duration),
         );
     }
@@ -266,10 +285,47 @@ fn print_regular(stats: &[TranscriptStats]) {
         }
     }
     println!(
-        " **{}** | **{}** | **{}** |",
+        " **{}** | **{}** | **{}** | **{}** |",
         grand_total.sessions,
         format_tokens(grand_total.input_tokens),
+        pricing::format_cost(grand_total.cost),
         format_duration(grand_total.duration_secs),
+    );
+}
+
+// --- Daily mode: per-day ---
+
+fn print_daily(stats: &[TranscriptStats]) {
+    let mut by_date: BTreeMap<String, Aggregate> = BTreeMap::new();
+    for s in stats {
+        by_date.entry(s.date.clone()).or_default().add(s);
+    }
+
+    println!("| Date | Sessions | Tokens (in/out) | Cost | Duration |");
+    println!("|------|----------|-----------------|------|----------|");
+
+    let mut total = Aggregate::default();
+
+    for (date, agg) in &by_date {
+        println!(
+            "| {} | {} | {}/{} | {} | {} |",
+            date,
+            agg.sessions,
+            format_tokens(agg.input_tokens),
+            format_tokens(agg.output_tokens),
+            pricing::format_cost(agg.cost),
+            format_duration(agg.duration_secs),
+        );
+        total.add_agg(agg);
+    }
+
+    println!(
+        "| **Total** | **{}** | **{}/{}** | **{}** | **{}** |",
+        total.sessions,
+        format_tokens(total.input_tokens),
+        format_tokens(total.output_tokens),
+        pricing::format_cost(total.cost),
+        format_duration(total.duration_secs),
     );
 }
 
@@ -286,14 +342,14 @@ fn print_detailed(stats: &[TranscriptStats]) {
         by_project.entry(key).or_default().add(s);
     }
 
-    println!("| Project | Sessions | User | Asst | Tools (ok/fail) | Tokens (in/out) | Duration |");
-    println!("|---------|----------|------|------|-----------------|-----------------|----------|");
+    println!("| Project | Sessions | User | Asst | Tools (ok/fail) | Tokens (in/out) | Cost | Duration |");
+    println!("|---------|----------|------|------|-----------------|-----------------|------|----------|");
 
     let mut total = Aggregate::default();
 
     for (project, agg) in &by_project {
         println!(
-            "| {} | {} | {} | {} | {}/{} | {}/{} | {} |",
+            "| {} | {} | {} | {} | {}/{} | {}/{} | {} | {} |",
             project,
             agg.sessions,
             agg.user_msgs,
@@ -302,13 +358,14 @@ fn print_detailed(stats: &[TranscriptStats]) {
             agg.tool_fail,
             format_tokens(agg.input_tokens),
             format_tokens(agg.output_tokens),
+            pricing::format_cost(agg.cost),
             format_duration(agg.duration_secs),
         );
         total.add_agg(agg);
     }
 
     println!(
-        "| **Total** | **{}** | **{}** | **{}** | **{}/{}** | **{}/{}** | **{}** |",
+        "| **Total** | **{}** | **{}** | **{}** | **{}/{}** | **{}/{}** | **{}** | **{}** |",
         total.sessions,
         total.user_msgs,
         total.asst_msgs,
@@ -316,6 +373,7 @@ fn print_detailed(stats: &[TranscriptStats]) {
         total.tool_fail,
         format_tokens(total.input_tokens),
         format_tokens(total.output_tokens),
+        pricing::format_cost(total.cost),
         format_duration(total.duration_secs),
     );
 }
@@ -520,6 +578,7 @@ mod tests {
             tool_name: "claude".to_string(),
             date: "2025-01-15".to_string(),
             project: "/proj".to_string(),
+            model: Some("opus-4.5".to_string()),
             user_msgs: 5,
             asst_msgs: 10,
             tool_ok: 3,
@@ -532,6 +591,8 @@ mod tests {
         assert_eq!(agg.sessions, 1);
         assert_eq!(agg.user_msgs, 5);
         assert_eq!(agg.input_tokens, 1000);
+        // 1000 input @ $5/MTok + 500 output @ $25/MTok = $0.005 + $0.0125
+        assert!((agg.cost - 0.0175).abs() < 0.0001);
     }
 
     #[test]

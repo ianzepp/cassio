@@ -104,6 +104,9 @@ enum Command {
         /// Show per-project detailed stats instead of month×tool overview
         #[arg(long)]
         detailed: bool,
+        /// Show per-day breakdown
+        #[arg(long)]
+        daily: bool,
     },
     /// Compact transcripts into daily/monthly analysis
     Compact {
@@ -183,7 +186,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             print!("{}", include_str!("../README.md"));
             return Ok(());
         }
-        Some(Command::Summary { detailed }) => {
+        Some(Command::Summary { detailed, daily }) => {
             let config = if cli.detached { Config::default() } else { Config::load() };
             let dir = cli
                 .output
@@ -194,7 +197,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         "--output is required (or set via `cassio set output <path>`)".into(),
                     )
                 })?;
-            return cassio::summary::run_summary(&dir, detailed);
+            return cassio::summary::run_summary(&dir, detailed, daily);
         }
         Some(Command::Compact { action }) => {
             let config = if cli.detached { Config::default() } else { Config::load() };
