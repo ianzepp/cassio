@@ -59,6 +59,18 @@ pub fn detect_parser_from_content(first_line: &str) -> Box<dyn Parser> {
     }
 }
 
+/// Truncate a string to at most `max` bytes, respecting char boundaries.
+pub(crate) fn truncate(s: &str, max: usize) -> &str {
+    if s.len() <= max {
+        return s;
+    }
+    let mut end = max;
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
 fn read_first_line(path: &Path) -> Result<String, CassioError> {
     use std::io::BufRead;
     let file = std::fs::File::open(path)?;

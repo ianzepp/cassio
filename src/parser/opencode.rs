@@ -304,7 +304,7 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
                                 .or(state.metadata.as_ref().and_then(|m| m.description.as_deref()))
                                 .unwrap_or("");
                             let truncated = if desc.len() > 100 {
-                                format!("{}...", &desc[..100])
+                                format!("{}...", super::truncate(desc, 100))
                             } else {
                                 desc.to_string()
                             };

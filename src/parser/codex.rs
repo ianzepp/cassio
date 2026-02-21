@@ -276,7 +276,7 @@ pub(crate) fn format_codex_function(name: &str, args_json: &str) -> String {
                     }
                 })
                 .unwrap_or_default();
-            let truncated = if cmd.len() > 200 { format!("{}...", &cmd[..200]) } else { cmd };
+            let truncated = if cmd.len() > 200 { format!("{}...", super::truncate(&cmd, 200)) } else { cmd };
             truncated.replace('\n', " ")
         }
         "read_file" => {
@@ -297,15 +297,15 @@ pub(crate) fn format_codex_function(name: &str, args_json: &str) -> String {
                     })
                     .collect::<Vec<_>>()
                     .join("; ");
-                if summary.len() > 150 { format!("{}...", &summary[..150]) } else { summary }
+                if summary.len() > 150 { format!("{}...", super::truncate(&summary, 150)) } else { summary }
             } else {
                 let s = serde_json::to_string(&args).unwrap_or_default();
-                if s.len() > 150 { format!("{}...", &s[..150]) } else { s }
+                if s.len() > 150 { format!("{}...", super::truncate(&s, 150)) } else { s }
             }
         }
         _ => {
             let s = serde_json::to_string(&args).unwrap_or_default();
-            if s.len() > 150 { format!("{}...", &s[..150]) } else { s }
+            if s.len() > 150 { format!("{}...", super::truncate(&s, 150)) } else { s }
         }
     }
 }

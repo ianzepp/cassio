@@ -386,7 +386,7 @@ fn extract_queue_summary(content: &str) -> String {
     }
     // Fallback: first 100 chars
     let truncated = if content.len() > 100 {
-        &content[..100]
+        super::truncate(content, 100)
     } else {
         content
     };
@@ -401,7 +401,7 @@ pub fn format_tool_input(tool_name: &str, input: &Value) -> String {
                 .and_then(|c| c.as_str())
                 .unwrap_or("");
             let truncated = if cmd.len() > 200 {
-                format!("{}...", &cmd[..200])
+                format!("{}...", super::truncate(cmd, 200))
             } else {
                 cmd.to_string()
             };
@@ -484,7 +484,7 @@ pub fn format_tool_input(tool_name: &str, input: &Value) -> String {
                     .collect::<Vec<_>>()
                     .join("; ");
                 if summary.len() > 150 {
-                    format!("{}...", &summary[..150])
+                    format!("{}...", super::truncate(&summary, 150))
                 } else {
                     summary
                 }
@@ -495,7 +495,7 @@ pub fn format_tool_input(tool_name: &str, input: &Value) -> String {
         _ => {
             let s = serde_json::to_string(input).unwrap_or_default();
             if s.len() > 150 {
-                format!("{}...", &s[..150])
+                format!("{}...", super::truncate(&s, 150))
             } else {
                 s
             }
