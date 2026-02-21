@@ -41,7 +41,7 @@ fn format_metadata(meta: &SessionMetadata, w: &mut dyn Write) -> Result<(), Cass
     )?;
 
     match meta.tool {
-        Tool::Claude => {
+        Tool::Claude | Tool::ClaudeDesktop => {
             if let Some(ref version) = meta.version {
                 writeln!(w, "{EMOJI_META} Version: {version}")?;
             }

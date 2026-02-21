@@ -20,6 +20,10 @@ pub fn detect_parser(path: &Path) -> Result<Box<dyn Parser>, CassioError> {
         return Ok(Box::new(codex::CodexParser));
     }
 
+    if path_str.contains("local-agent-mode-sessions") {
+        return Ok(Box::new(claude::ClaudeParser));
+    }
+
     if path_str.contains("opencode") {
         return Ok(Box::new(opencode::OpenCodeParser));
     }

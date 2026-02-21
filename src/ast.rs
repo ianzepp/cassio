@@ -7,6 +7,8 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "lowercase")]
 pub enum Tool {
     Claude,
+    #[serde(rename = "claude_desktop")]
+    ClaudeDesktop,
     Codex,
     OpenCode,
 }
@@ -15,6 +17,7 @@ impl std::fmt::Display for Tool {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Tool::Claude => write!(f, "claude"),
+            Tool::ClaudeDesktop => write!(f, "claude"),
             Tool::Codex => write!(f, "codex"),
             Tool::OpenCode => write!(f, "opencode"),
         }

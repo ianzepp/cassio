@@ -10,6 +10,7 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let path = match tool {
         Tool::Claude => home.join(".claude/projects"),
+        Tool::ClaudeDesktop => home.join("Library/Application Support/Claude/local-agent-mode-sessions"),
         Tool::Codex => home.join(".codex/sessions"),
         Tool::OpenCode => home.join(".local/share/opencode/storage"),
     };
@@ -22,7 +23,7 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
 
 /// Discover all available tool source directories.
 pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
-    let tools = [Tool::Claude, Tool::Codex, Tool::OpenCode];
+    let tools = [Tool::Claude, Tool::ClaudeDesktop, Tool::Codex, Tool::OpenCode];
     tools
         .iter()
         .filter_map(|&tool| default_source_path(tool).map(|p| (tool, p)))
@@ -31,13 +32,14 @@ pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
 
 /// Discover sources using config overrides, falling back to defaults.
 pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<(Tool, PathBuf)> {
-    let tools = [Tool::Claude, Tool::Codex, Tool::OpenCode];
+    let tools = [Tool::Claude, Tool::ClaudeDesktop, Tool::Codex, Tool::OpenCode];
     tools
         .iter()
         .filter_map(|&tool| {
             // Try config path first, then default
             let config_path = sources.as_ref().and_then(|s| match tool {
                 Tool::Claude => s.claude_path(),
+                Tool::ClaudeDesktop => s.claude_desktop_path(),
                 Tool::Codex => s.codex_path(),
                 Tool::OpenCode => s.opencode_path(),
             });
@@ -54,8 +56,8 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
     let mut results = Vec::new();
 
     match tool {
-        Some(Tool::Claude) => {
-            find_claude_files(dir, &mut results);
+        Some(Tool::Claude) | Some(Tool::ClaudeDesktop) => {
+            find_claude_files(dir, &mut results, tool.unwrap());
         }
         Some(Tool::Codex) => {
             find_codex_files(dir, &mut results);
@@ -70,8 +72,10 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
                 find_codex_files(dir, &mut results);
             } else if dir_str.contains("opencode") {
                 find_opencode_sessions(dir, &mut results);
+            } else if dir_str.contains("local-agent-mode-sessions") {
+                find_claude_files(dir, &mut results, Tool::ClaudeDesktop);
             } else {
-                find_claude_files(dir, &mut results);
+                find_claude_files(dir, &mut results, Tool::Claude);
             }
         }
     }
@@ -79,7 +83,7 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
     results
 }
 
-fn find_claude_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
+fn find_claude_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>, tool: Tool) {
     for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
         if path.extension().is_some_and(|e| e == "jsonl")
@@ -87,7 +91,7 @@ fn find_claude_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
                 .file_name()
                 .is_some_and(|n| n.to_string_lossy().contains(".bak"))
         {
-            results.push((Tool::Claude, path.to_path_buf()));
+            results.push((tool, path.to_path_buf()));
         }
     }
 }
@@ -124,7 +128,7 @@ fn find_opencode_sessions(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
 /// Returns (year-month folder, timestamp-tool.txt filename).
 pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
     match tool {
-        Tool::Claude => derive_claude_output_path(path),
+        Tool::Claude | Tool::ClaudeDesktop => derive_claude_output_path(path),
         Tool::Codex => derive_codex_output_path(path),
         Tool::OpenCode => {
             // For OpenCode we need the session data; use a placeholder

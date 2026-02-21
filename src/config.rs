@@ -29,6 +29,7 @@ impl Default for GitConfig {
 #[derive(Debug, Default, Deserialize)]
 pub struct SourcesConfig {
     pub claude: Option<String>,
+    pub claude_desktop: Option<String>,
     pub codex: Option<String>,
     pub opencode: Option<String>,
 }
@@ -192,6 +193,7 @@ pub fn init() -> Result<(), CassioError> {
 [sources]
 # Override default log paths (leave commented to use defaults)
 # claude = "~/.claude/projects"
+# claude_desktop = "~/Library/Application Support/Claude/local-agent-mode-sessions"
 # codex = "~/.codex/sessions"
 # opencode = "~/.local/share/opencode/storage"
 "#;
@@ -344,6 +346,10 @@ impl SourcesConfig {
 
     pub fn codex_path(&self) -> Option<PathBuf> {
         self.codex.as_deref().map(expand_tilde)
+    }
+
+    pub fn claude_desktop_path(&self) -> Option<PathBuf> {
+        self.claude_desktop.as_deref().map(expand_tilde)
     }
 
     pub fn opencode_path(&self) -> Option<PathBuf> {

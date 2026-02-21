@@ -384,9 +384,10 @@ fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result
     let sources = discover::discover_all_sources_with_config(&config.sources);
     if sources.is_empty() {
         eprintln!("No session directories found. Checked:");
-        eprintln!("  Claude:   ~/.claude/projects");
-        eprintln!("  Codex:    ~/.codex/sessions");
-        eprintln!("  OpenCode: ~/.local/share/opencode/storage");
+        eprintln!("  Claude:         ~/.claude/projects");
+        eprintln!("  Claude Desktop: ~/Library/Application Support/Claude/local-agent-mode-sessions");
+        eprintln!("  Codex:          ~/.codex/sessions");
+        eprintln!("  OpenCode:       ~/.local/share/opencode/storage");
         return Err(CassioError::Other("No sources found".into()));
     }
 
@@ -452,7 +453,7 @@ fn process_file_list(
         }
 
         let parser: Box<dyn Parser> = match tool {
-            Tool::Claude => Box::new(cassio::parser::claude::ClaudeParser),
+            Tool::Claude | Tool::ClaudeDesktop => Box::new(cassio::parser::claude::ClaudeParser),
             Tool::Codex => Box::new(cassio::parser::codex::CodexParser),
             Tool::OpenCode => Box::new(cassio::parser::opencode::OpenCodeParser),
         };
