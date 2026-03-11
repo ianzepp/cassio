@@ -229,7 +229,7 @@ fn print_regular(stats: &[TranscriptStats]) {
 
     // Collect months
     let mut months: BTreeSet<String> = BTreeSet::new();
-    for (key, _) in &by_month_tool {
+    for key in by_month_tool.keys() {
         months.insert(key.0.clone());
     }
     let months: Vec<String> = months.into_iter().collect();

@@ -178,8 +178,8 @@ fn find_codex_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
 /// `message/` is the canonical path passed to the parser.
 fn find_opencode_sessions(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
     let message_dir = dir.join("message");
-    if message_dir.is_dir() {
-        if let Ok(entries) = std::fs::read_dir(&message_dir) {
+    if message_dir.is_dir()
+        && let Ok(entries) = std::fs::read_dir(&message_dir) {
             for entry in entries.filter_map(|e| e.ok()) {
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with("ses_") {
@@ -187,7 +187,6 @@ fn find_opencode_sessions(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
                 }
             }
         }
-    }
 }
 
 /// Derive the output path `(year-month folder, filename)` for a session file.
@@ -214,9 +213,9 @@ pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
 /// chronologically within the output directory.
 fn derive_claude_output_path(path: &Path) -> (String, String) {
     // Read first line to get timestamp
-    if let Ok(first_line) = read_first_line(path) {
-        if let Ok(record) = serde_json::from_str::<serde_json::Value>(&first_line) {
-            if let Some(ts) = record.get("timestamp").and_then(|t| t.as_str()) {
+    if let Ok(first_line) = read_first_line(path)
+        && let Ok(record) = serde_json::from_str::<serde_json::Value>(&first_line)
+            && let Some(ts) = record.get("timestamp").and_then(|t| t.as_str()) {
                 let folder = ts.get(..7).unwrap_or("unknown").to_string();
                 let safe_ts = if let Some(dot) = ts.find('.') {
                     ts[..dot].replace(':', "-")
@@ -225,8 +224,6 @@ fn derive_claude_output_path(path: &Path) -> (String, String) {
                 };
                 return (folder, format!("{safe_ts}-claude.txt"));
             }
-        }
-    }
     ("unknown".to_string(), "unknown-claude.txt".to_string())
 }
 

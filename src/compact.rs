@@ -466,15 +466,14 @@ fn extract_session(path: &Path) -> Result<String, CassioError> {
             // WHY: Tool call lines reset the assistant context — the next non-tool
             // content may be a continuation that we want to capture.
             in_llm = false;
-        } else if in_llm {
-            if !line.trim().is_empty() {
+        } else if in_llm
+            && !line.trim().is_empty() {
                 llm_lines += 1;
                 if llm_lines <= LLM_LINE_LIMIT {
                     out.push_str(line);
                     out.push('\n');
                 }
             }
-        }
     }
 
     Ok(out)

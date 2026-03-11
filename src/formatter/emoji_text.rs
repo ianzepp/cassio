@@ -181,11 +181,10 @@ fn format_summary(
     }
 
     // Model (for Codex where it's tracked differently)
-    if metadata.tool == Tool::Codex {
-        if let Some(ref model) = metadata.model {
+    if metadata.tool == Tool::Codex
+        && let Some(ref model) = metadata.model {
             writeln!(w, "{EMOJI_META} Model: {model}")?;
         }
-    }
 
     writeln!(
         w,
@@ -242,11 +241,10 @@ fn format_summary(
     }
 
     // Cost (OpenCode)
-    if let Some(cost) = stats.cost {
-        if cost > 0.0 {
+    if let Some(cost) = stats.cost
+        && cost > 0.0 {
             writeln!(w, "{EMOJI_META} Cost: ${cost:.4}")?;
         }
-    }
 
     Ok(())
 }
@@ -267,14 +265,13 @@ fn shorten_model_name(model: &str) -> String {
     // Pattern: claude-{name}-{major}-{minor}-{date}
     // Target:  {name}-{major}.{minor}
     let parts: Vec<&str> = model.split('-').collect();
-    if parts.len() >= 4 && parts[0] == "claude" {
-        if let (Ok(major), Ok(minor)) = (
+    if parts.len() >= 4 && parts[0] == "claude"
+        && let (Ok(major), Ok(minor)) = (
             parts[2].parse::<u32>(),
             parts[3].parse::<u32>(),
         ) {
             return format!("{}-{major}.{minor}", parts[1]);
         }
-    }
     model.to_string()
 }
 

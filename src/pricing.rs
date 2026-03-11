@@ -1,12 +1,12 @@
-/// Token-to-cost estimation based on model name matching.
-///
-/// Provides a built-in price table for common AI coding models and a public
-/// `estimate_cost` function used by the summary module. Prices are per million
-/// tokens (input and output separately) and matched by substring against the
-/// model name.
-///
-/// Users can override prices via config (`cassio set pricing.input <rate>` and
-/// `cassio set pricing.output <rate>`) which bypass model matching entirely.
+//! Token-to-cost estimation based on model name matching.
+//!
+//! Provides a built-in price table for common AI coding models and a public
+//! `estimate_cost` function used by the summary module. Prices are per million
+//! tokens (input and output separately) and matched by substring against the
+//! model name.
+//!
+//! Users can override prices via config (`cassio set pricing.input <rate>` and
+//! `cassio set pricing.output <rate>`) which bypass model matching entirely.
 
 /// Per-million-token pricing for a model.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -124,8 +124,6 @@ pub fn estimate_cost(
 pub fn format_cost(cost: f64) -> String {
     if cost < 0.005 {
         "<$0.01".to_string()
-    } else if cost < 1.0 {
-        format!("${:.2}", cost)
     } else if cost < 100.0 {
         format!("${:.2}", cost)
     } else {

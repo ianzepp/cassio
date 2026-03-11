@@ -328,11 +328,10 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
     }
 
     // Merge format: CLI arg (if not default) → config value → "emoji-text"
-    if cli.format == "emoji-text" {
-        if let Some(ref fmt) = config.format {
+    if cli.format == "emoji-text"
+        && let Some(ref fmt) = config.format {
             cli.format = fmt.clone();
         }
-    }
 
     let format: OutputFormat = cli
         .format
@@ -537,14 +536,12 @@ fn process_file_list(
         }
 
         // Skip empty files
-        if path.is_file() {
-            if let Ok(meta) = fs::metadata(path) {
-                if meta.len() == 0 {
+        if path.is_file()
+            && let Ok(meta) = fs::metadata(path)
+                && meta.len() == 0 {
                     skipped += 1;
                     continue;
                 }
-            }
-        }
 
         let (folder, filename) = derive_output_path_for(*tool, path)?;
         let out_path = output_dir.join(&folder).join(&filename);
@@ -615,16 +612,15 @@ fn derive_output_path_for(tool: Tool, path: &Path) -> Result<(String, String), C
             let storage_dir = path.parent().and_then(|p| p.parent()).unwrap_or(path);
 
             let session_dir = storage_dir.join("session");
-            if session_dir.is_dir() {
-                if let Ok(entries) = fs::read_dir(&session_dir) {
+            if session_dir.is_dir()
+                && let Ok(entries) = fs::read_dir(&session_dir) {
                     for entry in entries.filter_map(|e| e.ok()) {
                         let session_file = entry.path().join(format!("{session_id}.json"));
-                        if session_file.exists() {
-                            if let Ok(content) = fs::read_to_string(&session_file) {
-                                if let Ok(val) =
+                        if session_file.exists()
+                            && let Ok(content) = fs::read_to_string(&session_file)
+                                && let Ok(val) =
                                     serde_json::from_str::<serde_json::Value>(&content)
-                                {
-                                    if let Some(created) = val
+                                    && let Some(created) = val
                                         .get("time")
                                         .and_then(|t| t.get("created"))
                                         .and_then(|c| c.as_f64())
@@ -646,12 +642,8 @@ fn derive_output_path_for(tool: Tool, path: &Path) -> Result<(String, String), C
                                         );
                                         return Ok((folder, format!("{ts}-opencode.txt")));
                                     }
-                                }
-                            }
-                        }
                     }
                 }
-            }
             Ok(("unknown".to_string(), format!("{session_id}-opencode.txt")))
         }
         _ => Ok(discover::derive_output_path(tool, path)),

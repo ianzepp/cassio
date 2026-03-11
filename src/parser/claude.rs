@@ -297,8 +297,8 @@ fn parse_user_record(
                         }
 
                         // Track file operations
-                        if let Some(file_path) = input.get("file_path").and_then(|f| f.as_str()) {
-                            if !is_error {
+                        if let Some(file_path) = input.get("file_path").and_then(|f| f.as_str())
+                            && !is_error {
                                 match name.as_str() {
                                     "Read" => {
                                         stats.files_read.insert(file_path.to_string());
@@ -312,7 +312,6 @@ fn parse_user_record(
                                     _ => {}
                                 }
                             }
-                        }
 
                         let summary = format_tool_input(&name, &input);
                         blocks.push(ContentBlock::ToolResult {
@@ -372,14 +371,13 @@ fn parse_assistant_record(
 
     // Check for model change
     let model = message.get("model").and_then(|m| m.as_str());
-    if let Some(m) = model {
-        if m != "<synthetic>" && current_model.as_deref() != Some(m) {
+    if let Some(m) = model
+        && m != "<synthetic>" && current_model.as_deref() != Some(m) {
             *current_model = Some(m.to_string());
             blocks.push(ContentBlock::ModelChange {
                 model: m.to_string(),
             });
         }
-    }
 
     // Track token usage
     if let Some(usage) = message.get("usage") {

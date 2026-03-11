@@ -164,8 +164,8 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                             // Skip - duplicated from event_msg
                             continue;
                         }
-                        if role == "assistant" {
-                            if let Some(content) = record.payload.get("content").and_then(|c| c.as_array()) {
+                        if role == "assistant"
+                            && let Some(content) = record.payload.get("content").and_then(|c| c.as_array()) {
                                 let mut blocks = Vec::new();
                                 let mut has_text = false;
                                 for block in content {
@@ -191,7 +191,6 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                                     });
                                 }
                             }
-                        }
                     }
                     "function_call" => {
                         let call_id = record.payload.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
@@ -216,8 +215,8 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                             }
 
                             // Track file operations from shell commands
-                            if name == "shell" {
-                                if let Ok(args) = serde_json::from_str::<Value>(&args_json) {
+                            if name == "shell"
+                                && let Ok(args) = serde_json::from_str::<Value>(&args_json) {
                                     let cmd = args.get("command")
                                         .map(|c| {
                                             if let Some(arr) = c.as_array() {
@@ -232,7 +231,7 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                                     for pat in &re_patterns {
                                         if let Some(idx) = cmd.find(pat) {
                                             let rest = &cmd[idx + pat.len()..];
-                                            let path = rest.trim_start_matches(|c: char| c == '\'' || c == '"');
+                                            let path = rest.trim_start_matches(['\'', '"']);
                                             let end = path.find(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == '|' || c == '>').unwrap_or(path.len());
                                             if end > 0 {
                                                 stats.files_read.insert(path[..end].to_string());
@@ -240,7 +239,6 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                                         }
                                     }
                                 }
-                            }
 
                             let summary = format_codex_function(&name, &args_json);
                             messages.push(Message {
@@ -266,8 +264,8 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
             "event_msg" => {
                 let payload_type = record.payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
                 if payload_type == "token_count" {
-                    if let Some(info) = record.payload.get("info") {
-                        if let Some(total) = info.get("total_token_usage") {
+                    if let Some(info) = record.payload.get("info")
+                        && let Some(total) = info.get("total_token_usage") {
                             let input = total.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                             let cached = total.get("cached_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
                             let output = total.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
@@ -280,9 +278,8 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                                 cache_creation_tokens: 0,
                             };
                         }
-                    }
-                } else if payload_type == "user_message" {
-                    if let Some(msg) = record.payload.get("message").and_then(|v| v.as_str()) {
+                } else if payload_type == "user_message"
+                    && let Some(msg) = record.payload.get("message").and_then(|v| v.as_str()) {
                         // Clean up message - remove context blocks and file refs
                         let mut text = msg.to_string();
                         // Remove <context ref="...">...</context>
@@ -313,12 +310,11 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                             });
                         }
                     }
-                }
             }
             "turn_context" => {
                 let model = record.payload.get("model").and_then(|v| v.as_str());
-                if let Some(m) = model {
-                    if current_model.as_deref() != Some(m) {
+                if let Some(m) = model
+                    && current_model.as_deref() != Some(m) {
                         current_model = Some(m.to_string());
                         messages.push(Message {
                             role: Role::System,
@@ -328,7 +324,6 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                             usage: None,
                         });
                     }
-                }
             }
             _ => {}
         }

@@ -291,8 +291,8 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
         }
 
         // Model change
-        if let Some(ref model) = oc_msg.model_id {
-            if current_model.as_ref() != Some(model) {
+        if let Some(ref model) = oc_msg.model_id
+            && current_model.as_ref() != Some(model) {
                 current_model = Some(model.clone());
                 messages.push(Message {
                     role: Role::System,
@@ -304,7 +304,6 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
                     usage: None,
                 });
             }
-        }
 
         let msg_parts = parts_map.remove(&oc_msg.id).unwrap_or_default();
         let role_str = oc_msg.role.as_deref().unwrap_or("");

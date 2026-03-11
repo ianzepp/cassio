@@ -39,6 +39,7 @@ use crate::error::CassioError;
 /// WHY: Isolating git options in a sub-struct keeps the top-level `Config` flat and
 /// maps cleanly to the `[git]` TOML table, making the config file readable.
 #[derive(Debug, Deserialize)]
+#[derive(Default)]
 pub struct GitConfig {
     /// Auto-commit output files after processing.
     #[serde(default)]
@@ -48,14 +49,6 @@ pub struct GitConfig {
     pub push: bool,
 }
 
-impl Default for GitConfig {
-    fn default() -> Self {
-        Self {
-            commit: false,
-            push: false,
-        }
-    }
-}
 
 /// Per-tool source path overrides from `[sources]` table.
 ///
@@ -435,11 +428,10 @@ fn infer_value(s: &str) -> toml_edit::Value {
     if let Ok(n) = s.parse::<i64>() {
         return toml_edit::Value::from(n);
     }
-    if let Ok(f) = s.parse::<f64>() {
-        if s.contains('.') {
+    if let Ok(f) = s.parse::<f64>()
+        && s.contains('.') {
             return toml_edit::Value::from(f);
         }
-    }
     toml_edit::Value::from(s)
 }
 
@@ -479,11 +471,10 @@ pub(crate) fn expand_tilde(path: &str) -> PathBuf {
         if let Some(home) = dirs::home_dir() {
             return home.join(rest);
         }
-    } else if path == "~" {
-        if let Some(home) = dirs::home_dir() {
+    } else if path == "~"
+        && let Some(home) = dirs::home_dir() {
             return home;
         }
-    }
     PathBuf::from(path)
 }
 

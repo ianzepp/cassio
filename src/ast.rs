@@ -198,6 +198,7 @@ pub struct TokenUsage {
 /// Using `HashSet<String>` for file paths deduplicates across multiple
 /// tool calls to the same file within one session.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct SessionStats {
     pub user_messages: u32,
     pub assistant_messages: u32,
@@ -214,22 +215,6 @@ pub struct SessionStats {
     pub cost: Option<f64>,
 }
 
-impl Default for SessionStats {
-    fn default() -> Self {
-        Self {
-            user_messages: 0,
-            assistant_messages: 0,
-            tool_calls: 0,
-            tool_errors: 0,
-            total_tokens: TokenUsage::default(),
-            files_read: HashSet::new(),
-            files_written: HashSet::new(),
-            files_edited: HashSet::new(),
-            duration_seconds: None,
-            cost: None,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {
