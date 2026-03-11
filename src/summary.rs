@@ -10,7 +10,7 @@ use crate::pricing;
 #[derive(Default)]
 struct TranscriptStats {
     tool_name: String,
-    date: String,       // YYYY-MM-DD
+    date: String, // YYYY-MM-DD
     project: String,
     model: Option<String>,
     user_msgs: u32,
@@ -59,7 +59,8 @@ impl Aggregate {
             s.cache_read_tokens,
             s.cache_write_tokens,
             None,
-        ).unwrap_or(0.0);
+        )
+        .unwrap_or(0.0);
     }
 
     fn add_agg(&mut self, other: &Aggregate) {
@@ -157,25 +158,32 @@ fn parse_transcript_stats(
                 // "N user, M assistant"
                 let parts: Vec<&str> = val.split(", ").collect();
                 if let Some(u) = parts.first() {
-                    stats.user_msgs = u.split_whitespace().next()
+                    stats.user_msgs = u
+                        .split_whitespace()
+                        .next()
                         .and_then(|n| n.parse().ok())
                         .unwrap_or(0);
                 }
                 if let Some(a) = parts.get(1) {
-                    stats.asst_msgs = a.split_whitespace().next()
+                    stats.asst_msgs = a
+                        .split_whitespace()
+                        .next()
                         .and_then(|n| n.parse().ok())
                         .unwrap_or(0);
                 }
-            } else if let Some(val) = rest.strip_prefix(" Tool calls: ")
+            } else if let Some(val) = rest
+                .strip_prefix(" Tool calls: ")
                 .or_else(|| rest.strip_prefix(" Function calls: "))
             {
                 // "N total, M failed"
                 let parts: Vec<&str> = val.split(", ").collect();
-                let total: u32 = parts.first()
+                let total: u32 = parts
+                    .first()
                     .and_then(|s| s.split_whitespace().next())
                     .and_then(|n| n.parse().ok())
                     .unwrap_or(0);
-                let failed: u32 = parts.get(1)
+                let failed: u32 = parts
+                    .get(1)
                     .and_then(|s| s.split_whitespace().next())
                     .and_then(|n| n.parse().ok())
                     .unwrap_or(0);
@@ -188,9 +196,9 @@ fn parse_transcript_stats(
                     let amount = it.next().unwrap_or("0");
                     let label = it.next().unwrap_or("");
                     match label {
-                        "in"          => stats.input_tokens      = parse_token_value(amount),
-                        "out"         => stats.output_tokens      = parse_token_value(amount),
-                        "cache_read"  => stats.cache_read_tokens  = parse_token_value(amount),
+                        "in" => stats.input_tokens = parse_token_value(amount),
+                        "out" => stats.output_tokens = parse_token_value(amount),
+                        "cache_read" => stats.cache_read_tokens = parse_token_value(amount),
                         "cache_write" => stats.cache_write_tokens = parse_token_value(amount),
                         _ => {}
                     }
@@ -353,8 +361,12 @@ fn print_detailed(stats: &[TranscriptStats]) {
         by_project.entry(key).or_default().add(s);
     }
 
-    println!("| Project | Sessions | User | Asst | Tools (ok/fail) | Tokens (in/out) | Cost | Duration |");
-    println!("|---------|----------|------|------|-----------------|-----------------|------|----------|");
+    println!(
+        "| Project | Sessions | User | Asst | Tools (ok/fail) | Tokens (in/out) | Cost | Duration |"
+    );
+    println!(
+        "|---------|----------|------|------|-----------------|-----------------|------|----------|"
+    );
 
     let mut total = Aggregate::default();
 
@@ -391,10 +403,7 @@ fn print_detailed(stats: &[TranscriptStats]) {
 
 /// Shorten a project path: keep last 3 components (or fewer).
 fn shorten_project(path: &str) -> String {
-    let normalized = path
-        .replace('\\', "/")
-        .trim_end_matches('/')
-        .to_string();
+    let normalized = path.replace('\\', "/").trim_end_matches('/').to_string();
     let parts: Vec<&str> = normalized.split('/').collect();
     if parts.len() <= 3 {
         return normalized;
@@ -517,7 +526,10 @@ mod tests {
     #[test]
     fn test_shorten_project_long() {
         // "/home/user/projects/myapp" splits to ["", "home", "user", "projects", "myapp"] -> last 3
-        assert_eq!(shorten_project("/home/user/projects/myapp"), "user/projects/myapp");
+        assert_eq!(
+            shorten_project("/home/user/projects/myapp"),
+            "user/projects/myapp"
+        );
     }
 
     #[test]
@@ -528,7 +540,10 @@ mod tests {
     #[test]
     fn test_shorten_project_trailing_slash() {
         // trailing slash stripped, then last 3 of ["", "home", "user", "projects", "myapp"]
-        assert_eq!(shorten_project("/home/user/projects/myapp/"), "user/projects/myapp");
+        assert_eq!(
+            shorten_project("/home/user/projects/myapp/"),
+            "user/projects/myapp"
+        );
     }
 
     // --- strip_emoji_prefix tests ---
@@ -610,8 +625,16 @@ mod tests {
 
     #[test]
     fn test_aggregate_add_agg() {
-        let mut a = Aggregate { sessions: 1, user_msgs: 5, ..Default::default() };
-        let b = Aggregate { sessions: 2, user_msgs: 10, ..Default::default() };
+        let mut a = Aggregate {
+            sessions: 1,
+            user_msgs: 5,
+            ..Default::default()
+        };
+        let b = Aggregate {
+            sessions: 2,
+            user_msgs: 10,
+            ..Default::default()
+        };
         a.add_agg(&b);
         assert_eq!(a.sessions, 3);
         assert_eq!(a.user_msgs, 15);

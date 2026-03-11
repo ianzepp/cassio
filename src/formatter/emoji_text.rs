@@ -38,12 +38,12 @@ use crate::ast::*;
 use crate::error::CassioError;
 use crate::formatter::Formatter;
 
-const EMOJI_META: &str = "\u{1f4cb}";      // 📋
-const EMOJI_USER: &str = "\u{1f464}";      // 👤
+const EMOJI_META: &str = "\u{1f4cb}"; // 📋
+const EMOJI_USER: &str = "\u{1f464}"; // 👤
 const EMOJI_ASSISTANT: &str = "\u{1f916}"; // 🤖
-const EMOJI_SUCCESS: &str = "\u{2705}";    // ✅
-const EMOJI_FAILURE: &str = "\u{274c}";    // ❌
-const EMOJI_QUEUE: &str = "\u{23f3}";      // ⏳
+const EMOJI_SUCCESS: &str = "\u{2705}"; // ✅
+const EMOJI_FAILURE: &str = "\u{274c}"; // ❌
+const EMOJI_QUEUE: &str = "\u{23f3}"; // ⏳
 
 /// Formatter that produces emoji-prefixed plain text transcripts.
 pub struct EmojiTextFormatter;
@@ -77,11 +77,7 @@ impl Formatter for EmojiTextFormatter {
 fn format_metadata(meta: &SessionMetadata, w: &mut dyn Write) -> Result<(), CassioError> {
     writeln!(w, "{EMOJI_META} Session: {}", meta.session_id)?;
     writeln!(w, "{EMOJI_META} Project: {}", meta.project_path)?;
-    writeln!(
-        w,
-        "{EMOJI_META} Started: {}",
-        meta.started_at.to_rfc3339()
-    )?;
+    writeln!(w, "{EMOJI_META} Started: {}", meta.started_at.to_rfc3339())?;
 
     match meta.tool {
         Tool::Claude | Tool::ClaudeDesktop => {
@@ -139,7 +135,11 @@ fn format_message(msg: &Message, w: &mut dyn Write) -> Result<(), CassioError> {
                 summary,
                 ..
             } => {
-                let emoji = if *success { EMOJI_SUCCESS } else { EMOJI_FAILURE };
+                let emoji = if *success {
+                    EMOJI_SUCCESS
+                } else {
+                    EMOJI_FAILURE
+                };
                 writeln!(w, "{emoji} {name}: {summary}")?;
             }
             ContentBlock::ModelChange { model } => {
@@ -182,9 +182,10 @@ fn format_summary(
 
     // Model (for Codex where it's tracked differently)
     if metadata.tool == Tool::Codex
-        && let Some(ref model) = metadata.model {
-            writeln!(w, "{EMOJI_META} Model: {model}")?;
-        }
+        && let Some(ref model) = metadata.model
+    {
+        writeln!(w, "{EMOJI_META} Model: {model}")?;
+    }
 
     writeln!(
         w,
@@ -242,9 +243,10 @@ fn format_summary(
 
     // Cost (OpenCode)
     if let Some(cost) = stats.cost
-        && cost > 0.0 {
-            writeln!(w, "{EMOJI_META} Cost: ${cost:.4}")?;
-        }
+        && cost > 0.0
+    {
+        writeln!(w, "{EMOJI_META} Cost: ${cost:.4}")?;
+    }
 
     Ok(())
 }
@@ -265,13 +267,12 @@ fn shorten_model_name(model: &str) -> String {
     // Pattern: claude-{name}-{major}-{minor}-{date}
     // Target:  {name}-{major}.{minor}
     let parts: Vec<&str> = model.split('-').collect();
-    if parts.len() >= 4 && parts[0] == "claude"
-        && let (Ok(major), Ok(minor)) = (
-            parts[2].parse::<u32>(),
-            parts[3].parse::<u32>(),
-        ) {
-            return format!("{}-{major}.{minor}", parts[1]);
-        }
+    if parts.len() >= 4
+        && parts[0] == "claude"
+        && let (Ok(major), Ok(minor)) = (parts[2].parse::<u32>(), parts[3].parse::<u32>())
+    {
+        return format!("{}-{major}.{minor}", parts[1]);
+    }
     model.to_string()
 }
 
@@ -313,8 +314,8 @@ fn format_tokens(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashSet;
     use chrono::Utc;
+    use std::collections::HashSet;
 
     #[test]
     fn test_shorten_model_name_opus() {
@@ -323,7 +324,10 @@ mod tests {
 
     #[test]
     fn test_shorten_model_name_sonnet() {
-        assert_eq!(shorten_model_name("claude-sonnet-4-5-20250929"), "sonnet-4.5");
+        assert_eq!(
+            shorten_model_name("claude-sonnet-4-5-20250929"),
+            "sonnet-4.5"
+        );
     }
 
     #[test]
@@ -398,14 +402,18 @@ mod tests {
                     role: Role::User,
                     timestamp: Some("2025-01-15T10:00:01Z".parse().unwrap()),
                     model: None,
-                    content: vec![ContentBlock::Text { text: "Hello!".to_string() }],
+                    content: vec![ContentBlock::Text {
+                        text: "Hello!".to_string(),
+                    }],
                     usage: None,
                 },
                 Message {
                     role: Role::Assistant,
                     timestamp: Some("2025-01-15T10:00:02Z".parse().unwrap()),
                     model: Some("claude-sonnet-4-5-20250929".to_string()),
-                    content: vec![ContentBlock::Text { text: "Hi there!".to_string() }],
+                    content: vec![ContentBlock::Text {
+                        text: "Hi there!".to_string(),
+                    }],
                     usage: None,
                 },
             ],
@@ -458,7 +466,10 @@ mod tests {
                 tool: Tool::Claude,
                 project_path: "/proj".to_string(),
                 started_at: Utc::now(),
-                version: None, git_branch: None, model: None, title: None,
+                version: None,
+                git_branch: None,
+                model: None,
+                title: None,
             },
             messages: vec![Message {
                 role: Role::Assistant,
@@ -472,7 +483,11 @@ mod tests {
                 }],
                 usage: None,
             }],
-            stats: SessionStats { user_messages: 0, assistant_messages: 1, ..Default::default() },
+            stats: SessionStats {
+                user_messages: 0,
+                assistant_messages: 1,
+                ..Default::default()
+            },
         };
         let mut buf = Vec::new();
         EmojiTextFormatter.format(&session, &mut buf).unwrap();
@@ -488,7 +503,10 @@ mod tests {
                 tool: Tool::Claude,
                 project_path: "/proj".to_string(),
                 started_at: Utc::now(),
-                version: None, git_branch: None, model: None, title: None,
+                version: None,
+                git_branch: None,
+                model: None,
+                title: None,
             },
             messages: vec![Message {
                 role: Role::Assistant,
@@ -502,7 +520,11 @@ mod tests {
                 }],
                 usage: None,
             }],
-            stats: SessionStats { user_messages: 0, assistant_messages: 1, ..Default::default() },
+            stats: SessionStats {
+                user_messages: 0,
+                assistant_messages: 1,
+                ..Default::default()
+            },
         };
         let mut buf = Vec::new();
         EmojiTextFormatter.format(&session, &mut buf).unwrap();
@@ -518,7 +540,10 @@ mod tests {
                 tool: Tool::Claude,
                 project_path: "/proj".to_string(),
                 started_at: Utc::now(),
-                version: None, git_branch: None, model: None, title: None,
+                version: None,
+                git_branch: None,
+                model: None,
+                title: None,
             },
             messages: vec![],
             stats: SessionStats::default(),

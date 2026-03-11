@@ -52,17 +52,26 @@ mod tests {
 
     #[test]
     fn test_from_str_emoji_text() {
-        assert_eq!("emoji-text".parse::<OutputFormat>().unwrap(), OutputFormat::EmojiText);
+        assert_eq!(
+            "emoji-text".parse::<OutputFormat>().unwrap(),
+            OutputFormat::EmojiText
+        );
     }
 
     #[test]
     fn test_from_str_text_alias() {
-        assert_eq!("text".parse::<OutputFormat>().unwrap(), OutputFormat::EmojiText);
+        assert_eq!(
+            "text".parse::<OutputFormat>().unwrap(),
+            OutputFormat::EmojiText
+        );
     }
 
     #[test]
     fn test_from_str_jsonl() {
-        assert_eq!("jsonl".parse::<OutputFormat>().unwrap(), OutputFormat::Jsonl);
+        assert_eq!(
+            "jsonl".parse::<OutputFormat>().unwrap(),
+            OutputFormat::Jsonl
+        );
     }
 
     #[test]

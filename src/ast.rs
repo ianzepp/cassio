@@ -145,13 +145,9 @@ pub struct Message {
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum ContentBlock {
     /// Plain text from the user or assistant.
-    Text {
-        text: String,
-    },
+    Text { text: String },
     /// Extended-thinking block from Claude — captured but typically hidden in output.
-    Thinking {
-        text: String,
-    },
+    Thinking { text: String },
     /// Tool invocation from the assistant; paired with a `ToolResult` in the next turn.
     ToolUse {
         id: String,
@@ -169,13 +165,9 @@ pub enum ContentBlock {
         summary: String,
     },
     /// Synthetic event recording that the active model changed during the session.
-    ModelChange {
-        model: String,
-    },
+    ModelChange { model: String },
     /// Claude Code queue operation (task sub-agent handoff).
-    QueueOperation {
-        summary: String,
-    },
+    QueueOperation { summary: String },
 }
 
 /// Anthropic-style token usage counts for a single message.
@@ -197,8 +189,7 @@ pub struct TokenUsage {
 /// scan over the message list when the formatter needs summary numbers.
 /// Using `HashSet<String>` for file paths deduplicates across multiple
 /// tool calls to the same file within one session.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SessionStats {
     pub user_messages: u32,
     pub assistant_messages: u32,
@@ -214,7 +205,6 @@ pub struct SessionStats {
     /// Total session cost in USD; only available from OpenCode logs.
     pub cost: Option<f64>,
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -245,7 +235,9 @@ mod tests {
 
     #[test]
     fn test_content_block_text_serde() {
-        let block = ContentBlock::Text { text: "hello".to_string() };
+        let block = ContentBlock::Text {
+            text: "hello".to_string(),
+        };
         let json = serde_json::to_string(&block).unwrap();
         assert!(json.contains("\"type\":\"text\""));
         let parsed: ContentBlock = serde_json::from_str(&json).unwrap();

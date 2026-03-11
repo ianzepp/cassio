@@ -38,8 +38,7 @@ use crate::error::CassioError;
 ///
 /// WHY: Isolating git options in a sub-struct keeps the top-level `Config` flat and
 /// maps cleanly to the `[git]` TOML table, making the config file readable.
-#[derive(Debug, Deserialize)]
-#[derive(Default)]
+#[derive(Debug, Deserialize, Default)]
 pub struct GitConfig {
     /// Auto-commit output files after processing.
     #[serde(default)]
@@ -48,7 +47,6 @@ pub struct GitConfig {
     #[serde(default)]
     pub push: bool,
 }
-
 
 /// Per-tool source path overrides from `[sources]` table.
 ///
@@ -283,8 +281,8 @@ pub fn init() -> Result<(), CassioError> {
 // the public API above rather than manipulating the document directly.
 
 fn config_path() -> Result<PathBuf, CassioError> {
-    let home =
-        dirs::home_dir().ok_or_else(|| CassioError::Other("Cannot determine home directory".into()))?;
+    let home = dirs::home_dir()
+        .ok_or_else(|| CassioError::Other("Cannot determine home directory".into()))?;
     Ok(home.join(".config/cassio/config.toml"))
 }
 
@@ -429,9 +427,10 @@ fn infer_value(s: &str) -> toml_edit::Value {
         return toml_edit::Value::from(n);
     }
     if let Ok(f) = s.parse::<f64>()
-        && s.contains('.') {
-            return toml_edit::Value::from(f);
-        }
+        && s.contains('.')
+    {
+        return toml_edit::Value::from(f);
+    }
     toml_edit::Value::from(s)
 }
 
@@ -472,9 +471,10 @@ pub(crate) fn expand_tilde(path: &str) -> PathBuf {
             return home.join(rest);
         }
     } else if path == "~"
-        && let Some(home) = dirs::home_dir() {
-            return home;
-        }
+        && let Some(home) = dirs::home_dir()
+    {
+        return home;
+    }
     PathBuf::from(path)
 }
 
@@ -593,7 +593,10 @@ claude = "~/.claude/projects"
         assert_eq!(config.format.as_deref(), Some("emoji-text"));
         assert!(config.git.commit);
         assert!(!config.git.push);
-        assert_eq!(config.sources.as_ref().unwrap().claude.as_deref(), Some("~/.claude/projects"));
+        assert_eq!(
+            config.sources.as_ref().unwrap().claude.as_deref(),
+            Some("~/.claude/projects")
+        );
     }
 
     #[test]

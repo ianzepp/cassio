@@ -77,9 +77,10 @@ impl Parser for OpenCodeParser {
                 .and_then(|n| n.to_str())
                 .unwrap_or("")
                 .to_string();
-            let storage_dir = path.parent().and_then(|p| p.parent()).ok_or_else(|| {
-                CassioError::Other("Cannot determine storage directory".into())
-            })?;
+            let storage_dir = path
+                .parent()
+                .and_then(|p| p.parent())
+                .ok_or_else(|| CassioError::Other("Cannot determine storage directory".into()))?;
             return parse_session(storage_dir, &session_id);
         }
 
@@ -292,18 +293,19 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
 
         // Model change
         if let Some(ref model) = oc_msg.model_id
-            && current_model.as_ref() != Some(model) {
-                current_model = Some(model.clone());
-                messages.push(Message {
-                    role: Role::System,
-                    timestamp: msg_ts,
-                    model: Some(model.clone()),
-                    content: vec![ContentBlock::ModelChange {
-                        model: model.clone(),
-                    }],
-                    usage: None,
-                });
-            }
+            && current_model.as_ref() != Some(model)
+        {
+            current_model = Some(model.clone());
+            messages.push(Message {
+                role: Role::System,
+                timestamp: msg_ts,
+                model: Some(model.clone()),
+                content: vec![ContentBlock::ModelChange {
+                    model: model.clone(),
+                }],
+                usage: None,
+            });
+        }
 
         let msg_parts = parts_map.remove(&oc_msg.id).unwrap_or_default();
         let role_str = oc_msg.role.as_deref().unwrap_or("");
@@ -382,8 +384,12 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
                                 let file_path = input.get("filePath").and_then(|v| v.as_str());
                                 if let Some(fp) = file_path {
                                     match tool_name {
-                                        "read" => { stats.files_read.insert(fp.to_string()); }
-                                        "write" => { stats.files_written.insert(fp.to_string()); }
+                                        "read" => {
+                                            stats.files_read.insert(fp.to_string());
+                                        }
+                                        "write" => {
+                                            stats.files_written.insert(fp.to_string());
+                                        }
                                         _ => {}
                                     }
                                 }
@@ -392,7 +398,10 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
                             let desc = state
                                 .title
                                 .as_deref()
-                                .or(state.metadata.as_ref().and_then(|m| m.description.as_deref()))
+                                .or(state
+                                    .metadata
+                                    .as_ref()
+                                    .and_then(|m| m.description.as_deref()))
                                 .unwrap_or("");
                             let truncated = if desc.len() > 100 {
                                 format!("{}...", super::truncate(desc, 100))
@@ -473,12 +482,11 @@ fn find_session_file(storage_dir: &Path, session_id: &str) -> Result<OCSession, 
                 let session_file = entry.path().join(format!("{session_id}.json"));
                 if session_file.exists() {
                     let content = std::fs::read_to_string(&session_file)?;
-                    let session: OCSession = serde_json::from_str(&content).map_err(|e| {
-                        CassioError::Json {
+                    let session: OCSession =
+                        serde_json::from_str(&content).map_err(|e| CassioError::Json {
                             path: session_file,
                             source: e,
-                        }
-                    })?;
+                        })?;
                     return Ok(session);
                 }
             }
@@ -547,5 +555,7 @@ fn load_parts(dir: &Path) -> Result<Vec<OCPart>, CassioError> {
 fn timestamp_from_millis(ms: i64) -> DateTime<Utc> {
     let secs = ms.div_euclid(1000);
     let nsecs = (ms.rem_euclid(1000) * 1_000_000) as u32;
-    Utc.timestamp_opt(secs, nsecs).single().unwrap_or_else(Utc::now)
+    Utc.timestamp_opt(secs, nsecs)
+        .single()
+        .unwrap_or_else(Utc::now)
 }

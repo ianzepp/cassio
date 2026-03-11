@@ -39,17 +39,20 @@ mod tests {
                 tool: Tool::Claude,
                 project_path: "/proj".to_string(),
                 started_at: Utc::now(),
-                version: None, git_branch: None, model: None, title: None,
+                version: None,
+                git_branch: None,
+                model: None,
+                title: None,
             },
-            messages: vec![
-                Message {
-                    role: Role::User,
-                    timestamp: None,
-                    model: None,
-                    content: vec![ContentBlock::Text { text: "hello".to_string() }],
-                    usage: None,
-                },
-            ],
+            messages: vec![Message {
+                role: Role::User,
+                timestamp: None,
+                model: None,
+                content: vec![ContentBlock::Text {
+                    text: "hello".to_string(),
+                }],
+                usage: None,
+            }],
             stats: SessionStats::default(),
         };
 
@@ -62,7 +65,10 @@ mod tests {
 
         // Each line should be valid JSON
         for line in &lines {
-            assert!(serde_json::from_str::<serde_json::Value>(line).is_ok(), "Invalid JSON: {line}");
+            assert!(
+                serde_json::from_str::<serde_json::Value>(line).is_ok(),
+                "Invalid JSON: {line}"
+            );
         }
 
         // First line should contain session_id

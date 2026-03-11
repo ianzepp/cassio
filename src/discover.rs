@@ -46,15 +46,13 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let path = match tool {
         Tool::Claude => home.join(".claude/projects"),
-        Tool::ClaudeDesktop => home.join("Library/Application Support/Claude/local-agent-mode-sessions"),
+        Tool::ClaudeDesktop => {
+            home.join("Library/Application Support/Claude/local-agent-mode-sessions")
+        }
         Tool::Codex => home.join(".codex/sessions"),
         Tool::OpenCode => home.join(".local/share/opencode/storage"),
     };
-    if path.exists() {
-        Some(path)
-    } else {
-        None
-    }
+    if path.exists() { Some(path) } else { None }
 }
 
 /// Return all tool source directories that exist on this machine.
@@ -62,7 +60,12 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
 /// Checks the four known tools in a fixed order. Tools whose default directory
 /// does not exist are silently skipped.
 pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
-    let tools = [Tool::Claude, Tool::ClaudeDesktop, Tool::Codex, Tool::OpenCode];
+    let tools = [
+        Tool::Claude,
+        Tool::ClaudeDesktop,
+        Tool::Codex,
+        Tool::OpenCode,
+    ];
     tools
         .iter()
         .filter_map(|&tool| default_source_path(tool).map(|p| (tool, p)))
@@ -79,7 +82,12 @@ pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
 /// The config path wins only when it exists — a misconfigured path degrades to the
 /// default rather than failing the whole discovery step.
 pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<(Tool, PathBuf)> {
-    let tools = [Tool::Claude, Tool::ClaudeDesktop, Tool::Codex, Tool::OpenCode];
+    let tools = [
+        Tool::Claude,
+        Tool::ClaudeDesktop,
+        Tool::Codex,
+        Tool::OpenCode,
+    ];
     tools
         .iter()
         .filter_map(|&tool| {
@@ -179,14 +187,15 @@ fn find_codex_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
 fn find_opencode_sessions(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
     let message_dir = dir.join("message");
     if message_dir.is_dir()
-        && let Ok(entries) = std::fs::read_dir(&message_dir) {
-            for entry in entries.filter_map(|e| e.ok()) {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if name.starts_with("ses_") {
-                    results.push((Tool::OpenCode, entry.path()));
-                }
+        && let Ok(entries) = std::fs::read_dir(&message_dir)
+    {
+        for entry in entries.filter_map(|e| e.ok()) {
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with("ses_") {
+                results.push((Tool::OpenCode, entry.path()));
             }
         }
+    }
 }
 
 /// Derive the output path `(year-month folder, filename)` for a session file.
@@ -215,15 +224,16 @@ fn derive_claude_output_path(path: &Path) -> (String, String) {
     // Read first line to get timestamp
     if let Ok(first_line) = read_first_line(path)
         && let Ok(record) = serde_json::from_str::<serde_json::Value>(&first_line)
-            && let Some(ts) = record.get("timestamp").and_then(|t| t.as_str()) {
-                let folder = ts.get(..7).unwrap_or("unknown").to_string();
-                let safe_ts = if let Some(dot) = ts.find('.') {
-                    ts[..dot].replace(':', "-")
-                } else {
-                    ts.replace(':', "-").trim_end_matches('Z').to_string()
-                };
-                return (folder, format!("{safe_ts}-claude.txt"));
-            }
+        && let Some(ts) = record.get("timestamp").and_then(|t| t.as_str())
+    {
+        let folder = ts.get(..7).unwrap_or("unknown").to_string();
+        let safe_ts = if let Some(dot) = ts.find('.') {
+            ts[..dot].replace(':', "-")
+        } else {
+            ts.replace(':', "-").trim_end_matches('Z').to_string()
+        };
+        return (folder, format!("{safe_ts}-claude.txt"));
+    }
     ("unknown".to_string(), "unknown-claude.txt".to_string())
 }
 
@@ -233,10 +243,7 @@ fn derive_claude_output_path(path: &Path) -> (String, String) {
 /// `rollout-YYYY-MM-DDTHH-MM-SS-<uuid>.jsonl`, so no file I/O is needed.
 fn derive_codex_output_path(path: &Path) -> (String, String) {
     // Filename: rollout-YYYY-MM-DDTHH-MM-SS-uuid.jsonl
-    let filename = path
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     // Extract timestamp parts
     if let Some(rest) = filename.strip_prefix("rollout-") {

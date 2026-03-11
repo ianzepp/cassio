@@ -7,11 +7,7 @@ use crate::error::CassioError;
 /// If git.commit is enabled, stage all changes in `dir` and commit.
 /// If git.push is also enabled, push after committing.
 /// Silently skips if `dir` is not a git repo.
-pub fn auto_commit_and_push(
-    dir: &Path,
-    message: &str,
-    git: &GitConfig,
-) -> Result<(), CassioError> {
+pub fn auto_commit_and_push(dir: &Path, message: &str, git: &GitConfig) -> Result<(), CassioError> {
     if !git.commit {
         return Ok(());
     }

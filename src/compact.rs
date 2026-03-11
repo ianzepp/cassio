@@ -123,7 +123,10 @@ pub fn run_dailies(
     }
 
     let elapsed = start.elapsed();
-    eprintln!("finished: {}, {compacted} compacted, {failed} failed", format_elapsed(elapsed));
+    eprintln!(
+        "finished: {}, {compacted} compacted, {failed} failed",
+        format_elapsed(elapsed)
+    );
     Ok(())
 }
 
@@ -140,7 +143,12 @@ pub fn run_dailies(
 ///
 /// Returns `Err` if the month directory is missing, there are no compaction files,
 /// or the LLM returns empty output.
-pub fn run_monthly(dir: &Path, month: &str, model: &str, provider: &str) -> Result<(), CassioError> {
+pub fn run_monthly(
+    dir: &Path,
+    month: &str,
+    model: &str,
+    provider: &str,
+) -> Result<(), CassioError> {
     // Validate month format
     if month.len() != 7 || month.as_bytes()[4] != b'-' {
         return Err(CassioError::Other(format!(
@@ -180,10 +188,7 @@ pub fn run_monthly(dir: &Path, month: &str, model: &str, provider: &str) -> Resu
         )));
     }
 
-    eprintln!(
-        "monthly: {month} ({} compaction files)",
-        compactions.len()
-    );
+    eprintln!("monthly: {month} ({} compaction files)", compactions.len());
 
     let start = Instant::now();
 
@@ -219,9 +224,10 @@ pub fn run_monthly(dir: &Path, month: &str, model: &str, provider: &str) -> Resu
 
         let mut chunk_summaries = Vec::new();
         for (i, chunk) in chunks.iter().enumerate() {
-            let days: Vec<&str> = chunk.iter().map(|(n, _)| {
-                n.strip_suffix(".compaction.md").unwrap_or(n.as_str())
-            }).collect();
+            let days: Vec<&str> = chunk
+                .iter()
+                .map(|(n, _)| n.strip_suffix(".compaction.md").unwrap_or(n.as_str()))
+                .collect();
             eprint!(
                 "  chunk [{} of {}] {} to {}...",
                 i + 1,
@@ -261,7 +267,10 @@ pub fn run_monthly(dir: &Path, month: &str, model: &str, provider: &str) -> Resu
     std::fs::write(&output_path, &result)?;
 
     let elapsed = start.elapsed();
-    eprintln!("finished: {}, wrote {month}.monthly.md", format_elapsed(elapsed));
+    eprintln!(
+        "finished: {}, wrote {month}.monthly.md",
+        format_elapsed(elapsed)
+    );
     Ok(())
 }
 
@@ -277,7 +286,11 @@ pub fn run_pending_monthlies(dir: &Path, model: &str, provider: &str) -> Result<
         return Ok(());
     }
 
-    eprintln!("Found {} pending month(s): {}", pending.len(), pending.join(", "));
+    eprintln!(
+        "Found {} pending month(s): {}",
+        pending.len(),
+        pending.join(", ")
+    );
 
     for month in &pending {
         run_monthly(dir, month, model, provider)?;
@@ -318,11 +331,7 @@ fn find_pending_months(dir: &Path) -> Result<Vec<String>, CassioError> {
                 .map(|entries| {
                     entries
                         .filter_map(|e| e.ok())
-                        .any(|e| {
-                            e.file_name()
-                                .to_string_lossy()
-                                .ends_with(".compaction.md")
-                        })
+                        .any(|e| e.file_name().to_string_lossy().ends_with(".compaction.md"))
                 })
                 .unwrap_or(false);
             if has_compactions {
@@ -346,10 +355,7 @@ fn find_pending_days(
 ) -> Result<Vec<(String, Vec<PathBuf>)>, CassioError> {
     let mut by_date: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
 
-    for entry in WalkDir::new(input_dir)
-        .into_iter()
-        .filter_map(|e| e.ok())
-    {
+    for entry in WalkDir::new(input_dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
         if !path.is_file() {
             continue;
@@ -466,14 +472,13 @@ fn extract_session(path: &Path) -> Result<String, CassioError> {
             // WHY: Tool call lines reset the assistant context — the next non-tool
             // content may be a continuation that we want to capture.
             in_llm = false;
-        } else if in_llm
-            && !line.trim().is_empty() {
-                llm_lines += 1;
-                if llm_lines <= LLM_LINE_LIMIT {
-                    out.push_str(line);
-                    out.push('\n');
-                }
+        } else if in_llm && !line.trim().is_empty() {
+            llm_lines += 1;
+            if llm_lines <= LLM_LINE_LIMIT {
+                out.push_str(line);
+                out.push('\n');
             }
+        }
     }
 
     Ok(out)
@@ -510,7 +515,10 @@ fn build_monthly_input(prompt: &str, month: &str, items: &[(String, String)]) ->
 /// TRADE-OFF: Chunking by byte count rather than token count is an approximation.
 /// It works well in practice because the 4 bytes/token estimate is conservative for
 /// English markdown content.
-fn build_chunks(contents: &[(String, String)], prompt_overhead: usize) -> Vec<Vec<(String, String)>> {
+fn build_chunks(
+    contents: &[(String, String)],
+    prompt_overhead: usize,
+) -> Vec<Vec<(String, String)>> {
     let budget = MAX_INPUT_BYTES.saturating_sub(prompt_overhead);
     let mut chunks: Vec<Vec<(String, String)>> = Vec::new();
     let mut current_chunk: Vec<(String, String)> = Vec::new();
@@ -627,7 +635,10 @@ fn invoke_codex(input: &str, model: &str) -> Result<String, CassioError> {
     }
 
     let result = std::fs::read_to_string(&tmp).map_err(|e| {
-        CassioError::Other(format!("Failed to read codex output file {}: {e}", tmp.display()))
+        CassioError::Other(format!(
+            "Failed to read codex output file {}: {e}",
+            tmp.display()
+        ))
     })?;
     let _ = std::fs::remove_file(&tmp);
 
@@ -719,9 +730,7 @@ mod tests {
 
     #[test]
     fn test_build_chunks_single_chunk() {
-        let contents = vec![
-            ("a".to_string(), "small content".to_string()),
-        ];
+        let contents = vec![("a".to_string(), "small content".to_string())];
         let chunks = build_chunks(&contents, 100);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].len(), 1);
