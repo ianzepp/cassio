@@ -702,10 +702,11 @@ mod tests {
             &session.messages[1].content[0],
             ContentBlock::ModelChange { model } if model == "model-a"
         ));
-        assert!(session.messages[2]
-            .content
-            .iter()
-            .any(|block| matches!(block, ContentBlock::Text { text } if text == "first answer")));
+        assert!(
+            session.messages[2].content.iter().any(
+                |block| matches!(block, ContentBlock::Text { text } if text == "first answer")
+            )
+        );
         assert!(session.messages[2].content.iter().any(|block| matches!(
             block,
             ContentBlock::ToolResult { name, success, .. } if name == "read" && *success
