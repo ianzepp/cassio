@@ -274,7 +274,18 @@ fn read_first_line(path: &Path) -> Result<String, std::io::Error> {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("cassio-{name}-{unique}"))
+    }
 
     #[test]
     fn test_derive_codex_output_path_valid() {
@@ -306,5 +317,23 @@ mod tests {
         let (folder, filename) = derive_output_path(Tool::OpenCode, &path);
         assert_eq!(folder, "unknown");
         assert!(filename.contains("opencode"));
+    }
+
+    #[test]
+    fn test_derive_claude_output_path_uses_first_non_empty_line() {
+        let dir = temp_dir("discover-claude");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("session.jsonl");
+        fs::write(
+            &path,
+            "\n  \n{\"timestamp\":\"2025-11-12T21:52:16.079Z\"}\n{\"timestamp\":\"2025-11-12T22:00:00Z\"}\n",
+        )
+        .unwrap();
+
+        let (folder, filename) = derive_claude_output_path(&path);
+        assert_eq!(folder, "2025-11");
+        assert_eq!(filename, "2025-11-12T21-52-16-claude.txt");
+
+        fs::remove_dir_all(dir).ok();
     }
 }

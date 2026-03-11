@@ -534,9 +534,9 @@ mod tests {
 
     #[test]
     fn test_infer_value_float() {
-        let v = infer_value("3.14");
+        let v = infer_value("2.5");
         let f = v.as_float().unwrap();
-        assert!((f - 3.14).abs() < 0.001);
+        assert!((f - 2.5).abs() < 0.001);
     }
 
     #[test]

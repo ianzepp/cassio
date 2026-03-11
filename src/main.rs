@@ -756,3 +756,57 @@ fn is_up_to_date(input: &Path, output: &Path) -> bool {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("cassio-{name}-{unique}"))
+    }
+
+    #[test]
+    fn test_derive_output_path_for_opencode_uses_session_timestamp() {
+        let dir = temp_dir("main-opencode-path");
+        let session_id = "ses_123";
+        let message_dir = dir.join("message").join(session_id);
+        fs::create_dir_all(&message_dir).unwrap();
+        fs::create_dir_all(dir.join("session").join("proj_1")).unwrap();
+        fs::write(
+            dir.join("session")
+                .join("proj_1")
+                .join(format!("{session_id}.json")),
+            r#"{
+                "id": "ses_123",
+                "time": { "created": 1704067200000.0 }
+            }"#,
+        )
+        .unwrap();
+
+        let (folder, filename) = derive_output_path_for(Tool::OpenCode, &message_dir).unwrap();
+        assert_eq!(folder, "2024-01");
+        assert_eq!(filename, "2024-01-01T00-00-00-opencode.txt");
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_derive_output_path_for_opencode_falls_back_when_metadata_missing() {
+        let dir = temp_dir("main-opencode-fallback");
+        let session_id = "ses_missing";
+        let message_dir = dir.join("message").join(session_id);
+        fs::create_dir_all(&message_dir).unwrap();
+
+        let (folder, filename) = derive_output_path_for(Tool::OpenCode, &message_dir).unwrap();
+        assert_eq!(folder, "unknown");
+        assert_eq!(filename, "ses_missing-opencode.txt");
+
+        fs::remove_dir_all(dir).ok();
+    }
+}
