@@ -19,6 +19,8 @@ struct TranscriptStats {
     tool_fail: u32,
     input_tokens: u64,
     output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
     duration_secs: i64,
 }
 
@@ -32,6 +34,8 @@ struct Aggregate {
     tool_fail: u32,
     input_tokens: u64,
     output_tokens: u64,
+    cache_read_tokens: u64,
+    cache_write_tokens: u64,
     duration_secs: i64,
     cost: f64,
 }
@@ -45,11 +49,15 @@ impl Aggregate {
         self.tool_fail += s.tool_fail;
         self.input_tokens += s.input_tokens;
         self.output_tokens += s.output_tokens;
+        self.cache_read_tokens += s.cache_read_tokens;
+        self.cache_write_tokens += s.cache_write_tokens;
         self.duration_secs += s.duration_secs;
         self.cost += pricing::estimate_cost(
             s.model.as_deref(),
             s.input_tokens,
             s.output_tokens,
+            s.cache_read_tokens,
+            s.cache_write_tokens,
             None,
         ).unwrap_or(0.0);
     }
@@ -62,6 +70,8 @@ impl Aggregate {
         self.tool_fail += other.tool_fail;
         self.input_tokens += other.input_tokens;
         self.output_tokens += other.output_tokens;
+        self.cache_read_tokens += other.cache_read_tokens;
+        self.cache_write_tokens += other.cache_write_tokens;
         self.duration_secs += other.duration_secs;
         self.cost += other.cost;
     }
@@ -172,17 +182,18 @@ fn parse_transcript_stats(
                 stats.tool_ok = total.saturating_sub(failed);
                 stats.tool_fail = failed;
             } else if let Some(val) = rest.strip_prefix(" Tokens: ") {
-                // "1.2K in, 4.5K out"
-                let parts: Vec<&str> = val.split(", ").collect();
-                if let Some(inp) = parts.first() {
-                    stats.input_tokens = parse_token_value(
-                        inp.split_whitespace().next().unwrap_or("0"),
-                    );
-                }
-                if let Some(out) = parts.get(1) {
-                    stats.output_tokens = parse_token_value(
-                        out.split_whitespace().next().unwrap_or("0"),
-                    );
+                // "1.2K in, 4.5K out[, 2.0M cache_read][, 195.3K cache_write]"
+                for part in val.split(", ") {
+                    let mut it = part.split_whitespace();
+                    let amount = it.next().unwrap_or("0");
+                    let label = it.next().unwrap_or("");
+                    match label {
+                        "in"          => stats.input_tokens      = parse_token_value(amount),
+                        "out"         => stats.output_tokens      = parse_token_value(amount),
+                        "cache_read"  => stats.cache_read_tokens  = parse_token_value(amount),
+                        "cache_write" => stats.cache_write_tokens = parse_token_value(amount),
+                        _ => {}
+                    }
                 }
             }
         }
@@ -585,6 +596,8 @@ mod tests {
             tool_fail: 1,
             input_tokens: 1000,
             output_tokens: 500,
+            cache_read_tokens: 0,
+            cache_write_tokens: 0,
             duration_secs: 60,
         };
         agg.add(&stats);

@@ -222,28 +222,23 @@ fn format_summary(
         writeln!(w, "{EMOJI_META} Files: {}", parts.join(", "))?;
     }
 
-    // Tokens
+    // Tokens (including cache)
     let input_tokens = stats.total_tokens.input_tokens;
     let output_tokens = stats.total_tokens.output_tokens;
-    if input_tokens > 0 || output_tokens > 0 {
-        writeln!(
-            w,
-            "{EMOJI_META} Tokens: {} in, {} out",
-            format_tokens(input_tokens),
-            format_tokens(output_tokens)
-        )?;
-    }
-
-    // Cache
     let cache_read = stats.total_tokens.cache_read_tokens;
     let cache_creation = stats.total_tokens.cache_creation_tokens;
-    if cache_read > 0 || cache_creation > 0 {
-        writeln!(
-            w,
-            "{EMOJI_META} Cache: {} read, {} created",
-            format_tokens(cache_read),
-            format_tokens(cache_creation)
-        )?;
+    if input_tokens > 0 || output_tokens > 0 || cache_read > 0 || cache_creation > 0 {
+        let mut token_parts = vec![
+            format!("{} in", format_tokens(input_tokens)),
+            format!("{} out", format_tokens(output_tokens)),
+        ];
+        if cache_read > 0 {
+            token_parts.push(format!("{} cache_read", format_tokens(cache_read)));
+        }
+        if cache_creation > 0 {
+            token_parts.push(format!("{} cache_write", format_tokens(cache_creation)));
+        }
+        writeln!(w, "{EMOJI_META} Tokens: {}", token_parts.join(", "))?;
     }
 
     // Cost (OpenCode)

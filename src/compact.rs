@@ -547,8 +547,9 @@ fn invoke_llm(input: &str, model: &str, provider: &str) -> Result<String, Cassio
         "ollama" => invoke_stdio("ollama", &["run", model], input),
         "claude" => invoke_stdio("claude", &["-p", "--model", model], input),
         "codex" => invoke_codex(input, model),
+        "openrouter" => invoke_openrouter(input, model),
         _ => Err(CassioError::Other(format!(
-            "Unknown provider: {provider} (supported: ollama, claude, codex)"
+            "Unknown provider: {provider} (supported: ollama, claude, codex, openrouter)"
         ))),
     }
 }
@@ -632,6 +633,47 @@ fn invoke_codex(input: &str, model: &str) -> Result<String, CassioError> {
     let _ = std::fs::remove_file(&tmp);
 
     Ok(result)
+}
+
+/// Call the OpenRouter chat completions API.
+///
+/// Reads `OPENROUTER_API_KEY` from the environment. The model parameter is passed
+/// directly (e.g., `anthropic/claude-sonnet-4`, `google/gemini-2.5-pro`).
+fn invoke_openrouter(input: &str, model: &str) -> Result<String, CassioError> {
+    let api_key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
+        CassioError::Other("OPENROUTER_API_KEY environment variable not set".to_string())
+    })?;
+
+    let body = serde_json::json!({
+        "model": model,
+        "messages": [
+            { "role": "user", "content": input }
+        ]
+    });
+
+    let response: serde_json::Value = ureq::post("https://openrouter.ai/api/v1/chat/completions")
+        .header("Authorization", &format!("Bearer {api_key}"))
+        .header("Content-Type", "application/json")
+        .send_json(&body)
+        .map_err(|e| CassioError::Other(format!("OpenRouter request failed: {e}")))?
+        .body_mut()
+        .read_json()
+        .map_err(|e| CassioError::Other(format!("OpenRouter response parse failed: {e}")))?;
+
+    // Extract the assistant message content from the chat completions response.
+    let content = response["choices"][0]["message"]["content"]
+        .as_str()
+        .unwrap_or("")
+        .to_string();
+
+    if content.is_empty() {
+        return Err(CassioError::Other(format!(
+            "OpenRouter returned empty response: {}",
+            serde_json::to_string_pretty(&response).unwrap_or_default()
+        )));
+    }
+
+    Ok(content)
 }
 
 /// Format a duration as `Xm YYs` (for ≥60s) or `Xs`.
