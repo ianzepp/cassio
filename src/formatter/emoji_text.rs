@@ -78,6 +78,7 @@ fn format_metadata(meta: &SessionMetadata, w: &mut dyn Write) -> Result<(), Cass
     writeln!(w, "{EMOJI_META} Session: {}", meta.session_id)?;
     writeln!(w, "{EMOJI_META} Project: {}", meta.project_path)?;
     writeln!(w, "{EMOJI_META} Started: {}", meta.started_at.to_rfc3339())?;
+    writeln!(w, "{EMOJI_META} Session Kind: {}", meta.session_kind)?;
 
     match meta.tool {
         Tool::Claude | Tool::ClaudeDesktop => {
@@ -392,6 +393,7 @@ mod tests {
                 tool: Tool::Claude,
                 project_path: "/home/user/project".to_string(),
                 started_at: "2025-01-15T10:00:00Z".parse().unwrap(),
+                session_kind: SessionKind::Human,
                 version: Some("1.0.0".to_string()),
                 git_branch: Some("main".to_string()),
                 model: Some("claude-sonnet-4-5-20250929".to_string()),
@@ -446,6 +448,7 @@ mod tests {
 
         assert!(output.contains("Session: test-session"));
         assert!(output.contains("Project: /home/user/project"));
+        assert!(output.contains("Session Kind: human"));
         assert!(output.contains("Version: 1.0.0"));
         assert!(output.contains("Branch: main"));
         assert!(output.contains("👤 Hello!"));
@@ -466,6 +469,7 @@ mod tests {
                 tool: Tool::Claude,
                 project_path: "/proj".to_string(),
                 started_at: Utc::now(),
+                session_kind: SessionKind::Human,
                 version: None,
                 git_branch: None,
                 model: None,
@@ -503,6 +507,7 @@ mod tests {
                 tool: Tool::Claude,
                 project_path: "/proj".to_string(),
                 started_at: Utc::now(),
+                session_kind: SessionKind::Human,
                 version: None,
                 git_branch: None,
                 model: None,
@@ -540,6 +545,7 @@ mod tests {
                 tool: Tool::Claude,
                 project_path: "/proj".to_string(),
                 started_at: Utc::now(),
+                session_kind: SessionKind::Human,
                 version: None,
                 git_branch: None,
                 model: None,

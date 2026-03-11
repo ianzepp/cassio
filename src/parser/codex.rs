@@ -169,6 +169,7 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                     tool: Tool::Codex,
                     project_path: cwd,
                     started_at: payload_ts.or(ts).unwrap_or_else(Utc::now),
+                    session_kind: SessionKind::Uncertain,
                     version: cli_version,
                     git_branch,
                     model: None,
@@ -433,6 +434,7 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
     let mut meta =
         metadata.ok_or_else(|| CassioError::Other("No session_meta record found".into()))?;
     meta.model = current_model;
+    meta.session_kind = classify_session_kind(&messages);
 
     if let (Some(first), Some(last)) = (first_timestamp, last_timestamp) {
         let dur = (last - first).num_seconds();

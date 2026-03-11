@@ -254,6 +254,7 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
         tool: Tool::OpenCode,
         project_path: session_data.directory.unwrap_or_default(),
         started_at,
+        session_kind: SessionKind::Uncertain,
         version: None,
         git_branch: None,
         model: None,
@@ -445,6 +446,7 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
     }
 
     metadata.model = current_model;
+    metadata.session_kind = classify_session_kind(&messages);
 
     if total_cost > 0.0 {
         stats.cost = Some(total_cost);

@@ -39,6 +39,7 @@ mod tests {
                 tool: Tool::Claude,
                 project_path: "/proj".to_string(),
                 started_at: Utc::now(),
+                session_kind: SessionKind::Human,
                 version: None,
                 git_branch: None,
                 model: None,
