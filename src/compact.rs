@@ -59,6 +59,7 @@ use walkdir::WalkDir;
 use crate::error::CassioError;
 
 const COMPACT_PROMPT: &str = include_str!("prompts/compact.md");
+const DAILY_MERGE_PROMPT: &str = include_str!("prompts/daily_merge.md");
 const MONTHLY_PROMPT: &str = include_str!("prompts/monthly.md");
 const MONTHLY_MERGE_PROMPT: &str = include_str!("prompts/monthly_merge.md");
 
@@ -68,6 +69,11 @@ const MONTHLY_MERGE_PROMPT: &str = include_str!("prompts/monthly_merge.md");
 /// but staying well under the limit avoids truncation errors and ensures fast
 /// response times from smaller models.
 const MAX_INPUT_BYTES: usize = 150 * 1024;
+
+enum DailyCompactionPlan {
+    Single(String),
+    Chunked(Vec<String>, String),
+}
 
 /// Run daily compaction over all pending days in `input_dir`.
 ///
@@ -403,21 +409,38 @@ fn compact_day(
     model: &str,
     provider: &str,
 ) -> Result<bool, CassioError> {
-    let mut input = String::new();
-    input.push_str(COMPACT_PROMPT);
-    input.push_str("\n\n---BEGIN TRANSCRIPTS---\n\n");
-
+    let mut sessions = Vec::new();
     for file in files {
         let extracted = extract_session(file)?;
         if !extracted.is_empty() {
-            input.push_str(&extracted);
-            input.push('\n');
+            let name = file
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("session")
+                .to_string();
+            sessions.push((name, extracted));
         }
     }
 
-    input.push_str("\n---END TRANSCRIPTS---\n");
+    let output = match plan_daily_compaction(day, &sessions) {
+        DailyCompactionPlan::Single(input) => invoke_llm(&input, model, provider)?,
+        DailyCompactionPlan::Chunked(chunk_inputs, merge_input) => {
+            let mut chunk_summaries = Vec::new();
+            for (i, chunk_input) in chunk_inputs.iter().enumerate() {
+                eprint!(" chunk [{}/{}]...", i + 1, chunk_inputs.len());
+                let output = invoke_llm(chunk_input, model, provider)?;
+                if output.trim().is_empty() {
+                    eprintln!(" [FAIL]");
+                    return Ok(false);
+                }
+                eprintln!(" ok");
+                chunk_summaries.push((format!("chunk-{}", i + 1), output));
+            }
 
-    let output = invoke_llm(&input, model, provider)?;
+            let merge_input = build_daily_merge_input(day, &chunk_summaries, &merge_input);
+            invoke_llm(&merge_input, model, provider)?
+        }
+    };
 
     if output.trim().is_empty() {
         return Ok(false);
@@ -429,6 +452,57 @@ fn compact_day(
     std::fs::write(&out_path, &output)?;
 
     Ok(true)
+}
+
+fn plan_daily_compaction(day: &str, sessions: &[(String, String)]) -> DailyCompactionPlan {
+    let prompt_overhead = COMPACT_PROMPT.len() + 100;
+    let total_content_bytes: usize = sessions.iter().map(|(_, c)| c.len()).sum();
+    let total_with_prompt = total_content_bytes + prompt_overhead;
+
+    if total_with_prompt <= MAX_INPUT_BYTES {
+        return DailyCompactionPlan::Single(build_daily_input(COMPACT_PROMPT, day, sessions));
+    }
+
+    let chunks = build_chunks(sessions, prompt_overhead);
+    let chunk_inputs = chunks
+        .iter()
+        .map(|chunk| build_daily_input(COMPACT_PROMPT, day, chunk))
+        .collect();
+    DailyCompactionPlan::Chunked(chunk_inputs, day.to_string())
+}
+
+fn build_daily_input(prompt: &str, day: &str, sessions: &[(String, String)]) -> String {
+    let mut input = String::new();
+    input.push_str(prompt);
+    input.push_str(&format!(
+        "\n\n---BEGIN TRANSCRIPTS ({day}, {} sessions)---\n\n",
+        sessions.len()
+    ));
+
+    for (name, content) in sessions {
+        input.push_str(content);
+        input.push_str(&format!("\n--- (end {name}) ---\n\n"));
+    }
+
+    input.push_str("---END TRANSCRIPTS---\n");
+    input
+}
+
+fn build_daily_merge_input(day: &str, chunks: &[(String, String)], merge_day: &str) -> String {
+    let mut input = String::new();
+    input.push_str(DAILY_MERGE_PROMPT);
+    input.push_str(&format!(
+        "\n\n---BEGIN DAILY PARTIALS ({day}, {} chunks)---\n\n",
+        chunks.len()
+    ));
+
+    for (name, content) in chunks {
+        input.push_str(content);
+        input.push_str(&format!("\n--- (end {name}) ---\n\n"));
+    }
+
+    input.push_str(&format!("---END DAILY PARTIALS ({merge_day})---\n"));
+    input
 }
 
 /// Reduce a session transcript to the content most useful for LLM compaction.
@@ -726,6 +800,53 @@ mod tests {
         assert!(result.contains("day 16 content"));
         assert!(result.contains("---BEGIN MONTHLY COMPACTIONS"));
         assert!(result.contains("---END MONTHLY COMPACTIONS---"));
+    }
+
+    #[test]
+    fn test_build_daily_input_structure() {
+        let sessions = vec![
+            ("s1.txt".to_string(), "session one".to_string()),
+            ("s2.txt".to_string(), "session two".to_string()),
+        ];
+        let result = build_daily_input("PROMPT", "2025-01-15", &sessions);
+        assert!(result.starts_with("PROMPT"));
+        assert!(result.contains("2025-01-15"));
+        assert!(result.contains("2 sessions"));
+        assert!(result.contains("session one"));
+        assert!(result.contains("session two"));
+        assert!(result.contains("---BEGIN TRANSCRIPTS"));
+        assert!(result.contains("---END TRANSCRIPTS---"));
+    }
+
+    #[test]
+    fn test_plan_daily_compaction_single() {
+        let sessions = vec![("a.txt".to_string(), "small content".to_string())];
+        let plan = plan_daily_compaction("2025-01-15", &sessions);
+        match plan {
+            DailyCompactionPlan::Single(input) => {
+                assert!(input.contains("2025-01-15"));
+                assert!(input.contains("small content"));
+            }
+            DailyCompactionPlan::Chunked(_, _) => panic!("expected single-pass plan"),
+        }
+    }
+
+    #[test]
+    fn test_plan_daily_compaction_chunked() {
+        let big = "x".repeat(100_000);
+        let sessions = vec![
+            ("a.txt".to_string(), big.clone()),
+            ("b.txt".to_string(), big),
+        ];
+        let plan = plan_daily_compaction("2025-01-15", &sessions);
+        match plan {
+            DailyCompactionPlan::Chunked(chunk_inputs, day) => {
+                assert!(chunk_inputs.len() >= 2);
+                assert_eq!(day, "2025-01-15");
+                assert!(chunk_inputs[0].contains("2025-01-15"));
+            }
+            DailyCompactionPlan::Single(_) => panic!("expected chunked plan"),
+        }
     }
 
     #[test]
