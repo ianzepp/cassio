@@ -32,7 +32,7 @@ use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
 
-use chrono::{Datelike, Local, Timelike, TimeZone, Utc};
+use chrono::{Datelike, Local, TimeZone, Timelike, Utc};
 use clap::{Parser as ClapParser, Subcommand};
 
 use cassio::ast::Tool;
@@ -191,7 +191,11 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             return Ok(());
         }
         Some(Command::Summary { detailed, daily }) => {
-            let config = if cli.detached { Config::default() } else { Config::load() };
+            let config = if cli.detached {
+                Config::default()
+            } else {
+                Config::load()
+            };
             let dir = cli
                 .output
                 .clone()
@@ -204,10 +208,20 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             return cassio::summary::run_summary(&dir, detailed, daily);
         }
         Some(Command::Compact { action }) => {
-            let config = if cli.detached { Config::default() } else { Config::load() };
+            let config = if cli.detached {
+                Config::default()
+            } else {
+                Config::load()
+            };
             let config_output = config.output_path();
-            let default_model = config.model.clone().unwrap_or_else(|| "llama3.1".to_string());
-            let default_provider = config.provider.clone().unwrap_or_else(|| "ollama".to_string());
+            let default_model = config
+                .model
+                .clone()
+                .unwrap_or_else(|| "llama3.1".to_string());
+            let default_provider = config
+                .provider
+                .clone()
+                .unwrap_or_else(|| "ollama".to_string());
             match action {
                 CompactAction::All { model, provider } => {
                     let model = model.unwrap_or_else(|| default_model.clone());
@@ -218,7 +232,8 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         .or_else(|| config_output.clone())
                         .ok_or_else(|| {
                             CassioError::Other(
-                                "--output is required (or set via `cassio set output <path>`)".into(),
+                                "--output is required (or set via `cassio set output <path>`)"
+                                    .into(),
                             )
                         })?;
 
@@ -229,8 +244,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         .parse()
                         .map_err(|e: String| CassioError::Other(e))?;
                     let formatter = format.formatter();
-                    let sources =
-                        discover::discover_all_sources_with_config(&config.sources);
+                    let sources = discover::discover_all_sources_with_config(&config.sources);
                     if sources.is_empty() {
                         eprintln!("No session sources found, skipping.");
                     } else {
@@ -245,13 +259,26 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                             eprintln!("\nProcessing {} ({})...", tool, path.display());
                             let files = discover::find_session_files(path, Some(*tool));
                             eprintln!("Found {} session files", files.len());
-                            process_file_list(&files, &output_dir, cli.force, &*formatter, cli.filter_dir.as_deref(), cli.dry_run)?;
+                            process_file_list(
+                                &files,
+                                &output_dir,
+                                cli.force,
+                                &*formatter,
+                                cli.filter_dir.as_deref(),
+                                cli.dry_run,
+                            )?;
                         }
                     }
 
                     // Step 2: transcripts → dailies
                     eprintln!("\n=== Step 2: Compacting dailies ===\n");
-                    cassio::compact::run_dailies(&output_dir, &output_dir, None, &model, &provider)?;
+                    cassio::compact::run_dailies(
+                        &output_dir,
+                        &output_dir,
+                        None,
+                        &model,
+                        &provider,
+                    )?;
 
                     // Step 3: dailies → monthlies
                     eprintln!("\n=== Step 3: Compacting monthlies ===\n");
@@ -278,7 +305,8 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         .or_else(|| config_output.clone())
                         .ok_or_else(|| {
                             CassioError::Other(
-                                "--input is required (or set via `cassio set output <path>`)".into(),
+                                "--input is required (or set via `cassio set output <path>`)"
+                                    .into(),
                             )
                         })?;
                     let output_dir = cli
@@ -286,15 +314,28 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         .clone()
                         .or(config_output)
                         .unwrap_or_else(|| input_dir.clone());
-                    cassio::compact::run_dailies(&input_dir, &output_dir, limit, &model, &provider)?;
+                    cassio::compact::run_dailies(
+                        &input_dir,
+                        &output_dir,
+                        limit,
+                        &model,
+                        &provider,
+                    )?;
                     cassio::git::auto_commit_and_push(
                         &output_dir,
-                        &format!("cassio compact dailies ({})", Local::now().format("%Y-%m-%d")),
+                        &format!(
+                            "cassio compact dailies ({})",
+                            Local::now().format("%Y-%m-%d")
+                        ),
                         &config.git,
                     )?;
                     return Ok(());
                 }
-                CompactAction::Monthly { input, model, provider } => {
+                CompactAction::Monthly {
+                    input,
+                    model,
+                    provider,
+                } => {
                     let model = model.unwrap_or(default_model);
                     let provider = provider.unwrap_or(default_provider);
                     let dir = cli
@@ -303,7 +344,8 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         .or_else(|| config_output.clone())
                         .ok_or_else(|| {
                             CassioError::Other(
-                                "--output is required (or set via `cassio set output <path>`)".into(),
+                                "--output is required (or set via `cassio set output <path>`)"
+                                    .into(),
                             )
                         })?;
                     cassio::compact::run_monthly(&dir, &input, &model, &provider)?;
@@ -320,7 +362,11 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
     }
 
     // Process mode — load config and merge
-    let config = if cli.detached { Config::default() } else { Config::load() };
+    let config = if cli.detached {
+        Config::default()
+    } else {
+        Config::load()
+    };
 
     // Merge output: CLI arg → config value
     if cli.output.is_none() {
@@ -329,9 +375,10 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
 
     // Merge format: CLI arg (if not default) → config value → "emoji-text"
     if cli.format == "emoji-text"
-        && let Some(ref fmt) = config.format {
-            cli.format = fmt.clone();
-        }
+        && let Some(ref fmt) = config.format
+    {
+        cli.format = fmt.clone();
+    }
 
     let format: OutputFormat = cli
         .format
@@ -345,7 +392,9 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
 
     match cli.path {
         Some(ref path) if path.is_dir() => run_batch_mode(path, &cli, &config, &*formatter),
-        Some(ref path) if path.is_file() => run_single_file(path, &*formatter, cli.filter_dir.as_deref()),
+        Some(ref path) if path.is_file() => {
+            run_single_file(path, &*formatter, cli.filter_dir.as_deref())
+        }
         Some(ref path) => Err(CassioError::Other(format!(
             "Path not found: {}",
             path.display()
@@ -355,14 +404,25 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
 }
 
 /// Parse and format a single session file, writing output to stdout.
-fn run_single_file(path: &Path, formatter: &dyn Formatter, filter_dir: Option<&Path>) -> Result<(), CassioError> {
+fn run_single_file(
+    path: &Path,
+    formatter: &dyn Formatter,
+    filter_dir: Option<&Path>,
+) -> Result<(), CassioError> {
     let parser = cassio::parser::detect_parser(path)?;
     let session = parser.parse_session(path)?;
 
     if let Some(filter) = filter_dir {
         let filter_str = filter.to_string_lossy();
-        if !session.metadata.project_path.starts_with(filter_str.as_ref()) {
-            eprintln!("Skipping: session project path '{}' does not match --filter-dir", session.metadata.project_path);
+        if !session
+            .metadata
+            .project_path
+            .starts_with(filter_str.as_ref())
+        {
+            eprintln!(
+                "Skipping: session project path '{}' does not match --filter-dir",
+                session.metadata.project_path
+            );
             return Ok(());
         }
     }
@@ -382,7 +442,7 @@ fn run_single_file(path: &Path, formatter: &dyn Formatter, filter_dir: Option<&P
 fn run_stdin(formatter: &dyn Formatter, filter_dir: Option<&Path>) -> Result<(), CassioError> {
     let stdin = io::stdin();
     let reader = stdin.lock();
-    let lines: Vec<String> = reader.lines().map(|l| l.unwrap_or_default()).collect();
+    let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
 
     if lines.is_empty() {
         return Err(CassioError::Other("No input on stdin".into()));
@@ -395,18 +455,24 @@ fn run_stdin(formatter: &dyn Formatter, filter_dir: Option<&Path>) -> Result<(),
         .cloned()
         .unwrap_or_default();
 
-    let session = if first_line.contains("\"session_meta\"")
-        || first_line.contains("\"response_item\"")
-    {
-        cassio::parser::codex::CodexParser::parse_from_lines(lines.into_iter())?
-    } else {
-        cassio::parser::claude::ClaudeParser::parse_from_lines(lines.into_iter())?
-    };
+    let session =
+        if first_line.contains("\"session_meta\"") || first_line.contains("\"response_item\"") {
+            cassio::parser::codex::CodexParser::parse_from_lines(lines.into_iter())?
+        } else {
+            cassio::parser::claude::ClaudeParser::parse_from_lines(lines.into_iter())?
+        };
 
     if let Some(filter) = filter_dir {
         let filter_str = filter.to_string_lossy();
-        if !session.metadata.project_path.starts_with(filter_str.as_ref()) {
-            eprintln!("Skipping: session project path '{}' does not match --filter-dir", session.metadata.project_path);
+        if !session
+            .metadata
+            .project_path
+            .starts_with(filter_str.as_ref())
+        {
+            eprintln!(
+                "Skipping: session project path '{}' does not match --filter-dir",
+                session.metadata.project_path
+            );
             return Ok(());
         }
     }
@@ -437,7 +503,14 @@ fn run_batch_mode(
     let total = files.len();
     eprintln!("Found {total} session files");
 
-    process_file_list(&files, output_dir, cli.force, formatter, cli.filter_dir.as_deref(), cli.dry_run)?;
+    process_file_list(
+        &files,
+        output_dir,
+        cli.force,
+        formatter,
+        cli.filter_dir.as_deref(),
+        cli.dry_run,
+    )?;
 
     if !cli.dry_run {
         cassio::git::auto_commit_and_push(
@@ -465,7 +538,9 @@ fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result
     if sources.is_empty() {
         eprintln!("No session directories found. Checked:");
         eprintln!("  Claude:         ~/.claude/projects");
-        eprintln!("  Claude Desktop: ~/Library/Application Support/Claude/local-agent-mode-sessions");
+        eprintln!(
+            "  Claude Desktop: ~/Library/Application Support/Claude/local-agent-mode-sessions"
+        );
         eprintln!("  Codex:          ~/.codex/sessions");
         eprintln!("  OpenCode:       ~/.local/share/opencode/storage");
         return Err(CassioError::Other("No sources found".into()));
@@ -485,7 +560,14 @@ fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result
         let total = files.len();
         eprintln!("Found {total} session files");
 
-        process_file_list(&files, output_dir, cli.force, formatter, cli.filter_dir.as_deref(), cli.dry_run)?;
+        process_file_list(
+            &files,
+            output_dir,
+            cli.force,
+            formatter,
+            cli.filter_dir.as_deref(),
+            cli.dry_run,
+        )?;
     }
 
     if !cli.dry_run {
@@ -538,10 +620,11 @@ fn process_file_list(
         // Skip empty files
         if path.is_file()
             && let Ok(meta) = fs::metadata(path)
-                && meta.len() == 0 {
-                    skipped += 1;
-                    continue;
-                }
+            && meta.len() == 0
+        {
+            skipped += 1;
+            continue;
+        }
 
         let (folder, filename) = derive_output_path_for(*tool, path)?;
         let out_path = output_dir.join(&folder).join(&filename);
@@ -566,7 +649,11 @@ fn process_file_list(
 
                 if let Some(filter) = filter_dir {
                     let filter_str = filter.to_string_lossy();
-                    if !session.metadata.project_path.starts_with(filter_str.as_ref()) {
+                    if !session
+                        .metadata
+                        .project_path
+                        .starts_with(filter_str.as_ref())
+                    {
                         skipped += 1;
                         continue;
                     }
@@ -591,9 +678,7 @@ fn process_file_list(
         }
     }
 
-    eprintln!(
-        "\r  Done: {processed} processed, {skipped} skipped, {up_to_date} up-to-date     "
-    );
+    eprintln!("\r  Done: {processed} processed, {skipped} skipped, {up_to_date} up-to-date     ");
     Ok(())
 }
 
@@ -613,37 +698,36 @@ fn derive_output_path_for(tool: Tool, path: &Path) -> Result<(String, String), C
 
             let session_dir = storage_dir.join("session");
             if session_dir.is_dir()
-                && let Ok(entries) = fs::read_dir(&session_dir) {
-                    for entry in entries.filter_map(|e| e.ok()) {
-                        let session_file = entry.path().join(format!("{session_id}.json"));
-                        if session_file.exists()
-                            && let Ok(content) = fs::read_to_string(&session_file)
-                                && let Ok(val) =
-                                    serde_json::from_str::<serde_json::Value>(&content)
-                                    && let Some(created) = val
-                                        .get("time")
-                                        .and_then(|t| t.get("created"))
-                                        .and_then(|c| c.as_f64())
-                                    {
-                                        let dt = Utc
-                                            .timestamp_opt(created as i64 / 1000, 0)
-                                            .single()
-                                            .unwrap_or_else(Utc::now);
-                                        let folder =
-                                            format!("{:04}-{:02}", dt.year(), dt.month());
-                                        let ts = format!(
-                                            "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}",
-                                            dt.year(),
-                                            dt.month(),
-                                            dt.day(),
-                                            dt.hour(),
-                                            dt.minute(),
-                                            dt.second()
-                                        );
-                                        return Ok((folder, format!("{ts}-opencode.txt")));
-                                    }
+                && let Ok(entries) = fs::read_dir(&session_dir)
+            {
+                for entry in entries.filter_map(|e| e.ok()) {
+                    let session_file = entry.path().join(format!("{session_id}.json"));
+                    if session_file.exists()
+                        && let Ok(content) = fs::read_to_string(&session_file)
+                        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&content)
+                        && let Some(created) = val
+                            .get("time")
+                            .and_then(|t| t.get("created"))
+                            .and_then(|c| c.as_f64())
+                    {
+                        let dt = Utc
+                            .timestamp_opt(created as i64 / 1000, 0)
+                            .single()
+                            .unwrap_or_else(Utc::now);
+                        let folder = format!("{:04}-{:02}", dt.year(), dt.month());
+                        let ts = format!(
+                            "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}",
+                            dt.year(),
+                            dt.month(),
+                            dt.day(),
+                            dt.hour(),
+                            dt.minute(),
+                            dt.second()
+                        );
+                        return Ok((folder, format!("{ts}-opencode.txt")));
                     }
                 }
+            }
             Ok(("unknown".to_string(), format!("{session_id}-opencode.txt")))
         }
         _ => Ok(discover::derive_output_path(tool, path)),

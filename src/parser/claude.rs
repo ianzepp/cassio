@@ -56,7 +56,8 @@ impl Parser for ClaudeParser {
     fn parse_session(&self, path: &Path) -> Result<Session, CassioError> {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
-        parse_lines(reader.lines().map(|l| l.unwrap_or_default()))
+        let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+        parse_lines(lines.into_iter())
     }
 }
 
@@ -288,7 +289,10 @@ fn parse_user_record(
                         .and_then(|t| t.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let is_error = block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false);
+                    let is_error = block
+                        .get("is_error")
+                        .and_then(|e| e.as_bool())
+                        .unwrap_or(false);
 
                     if let Some((name, input)) = pending_tools.remove(&tool_use_id) {
                         stats.tool_calls += 1;
@@ -298,20 +302,21 @@ fn parse_user_record(
 
                         // Track file operations
                         if let Some(file_path) = input.get("file_path").and_then(|f| f.as_str())
-                            && !is_error {
-                                match name.as_str() {
-                                    "Read" => {
-                                        stats.files_read.insert(file_path.to_string());
-                                    }
-                                    "Write" => {
-                                        stats.files_written.insert(file_path.to_string());
-                                    }
-                                    "Edit" => {
-                                        stats.files_edited.insert(file_path.to_string());
-                                    }
-                                    _ => {}
+                            && !is_error
+                        {
+                            match name.as_str() {
+                                "Read" => {
+                                    stats.files_read.insert(file_path.to_string());
                                 }
+                                "Write" => {
+                                    stats.files_written.insert(file_path.to_string());
+                                }
+                                "Edit" => {
+                                    stats.files_edited.insert(file_path.to_string());
+                                }
+                                _ => {}
                             }
+                        }
 
                         let summary = format_tool_input(&name, &input);
                         blocks.push(ContentBlock::ToolResult {
@@ -372,19 +377,25 @@ fn parse_assistant_record(
     // Check for model change
     let model = message.get("model").and_then(|m| m.as_str());
     if let Some(m) = model
-        && m != "<synthetic>" && current_model.as_deref() != Some(m) {
-            *current_model = Some(m.to_string());
-            blocks.push(ContentBlock::ModelChange {
-                model: m.to_string(),
-            });
-        }
+        && m != "<synthetic>"
+        && current_model.as_deref() != Some(m)
+    {
+        *current_model = Some(m.to_string());
+        blocks.push(ContentBlock::ModelChange {
+            model: m.to_string(),
+        });
+    }
 
     // Track token usage
     if let Some(usage) = message.get("usage") {
-        stats.total_tokens.input_tokens +=
-            usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-        stats.total_tokens.output_tokens +=
-            usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        stats.total_tokens.input_tokens += usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        stats.total_tokens.output_tokens += usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
         stats.total_tokens.cache_creation_tokens += usage
             .get("cache_creation_input_tokens")
             .and_then(|v| v.as_u64())
@@ -396,8 +407,14 @@ fn parse_assistant_record(
     }
 
     let token_usage = message.get("usage").map(|usage| TokenUsage {
-        input_tokens: usage.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
-        output_tokens: usage.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0),
+        input_tokens: usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        output_tokens: usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
         cache_read_tokens: usage
             .get("cache_read_input_tokens")
             .and_then(|v| v.as_u64())
@@ -423,10 +440,7 @@ fn parse_assistant_record(
                     }
                 }
                 "thinking" => {
-                    let text = block
-                        .get("thinking")
-                        .and_then(|t| t.as_str())
-                        .unwrap_or("");
+                    let text = block.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
                     if !text.is_empty() {
                         blocks.push(ContentBlock::Thinking {
                             text: text.to_string(),
@@ -444,15 +458,14 @@ fn parse_assistant_record(
                         .and_then(|n| n.as_str())
                         .unwrap_or("")
                         .to_string();
-                    let input = block.get("input").cloned().unwrap_or(Value::Object(Default::default()));
+                    let input = block
+                        .get("input")
+                        .cloned()
+                        .unwrap_or(Value::Object(Default::default()));
 
                     pending_tools.insert(id.clone(), (name.clone(), input.clone()));
 
-                    blocks.push(ContentBlock::ToolUse {
-                        id,
-                        name,
-                        input,
-                    });
+                    blocks.push(ContentBlock::ToolUse { id, name, input });
                 }
                 _ => {}
             }
@@ -508,10 +521,7 @@ fn extract_queue_summary(content: &str) -> String {
 pub fn format_tool_input(tool_name: &str, input: &Value) -> String {
     match tool_name {
         "Bash" => {
-            let cmd = input
-                .get("command")
-                .and_then(|c| c.as_str())
-                .unwrap_or("");
+            let cmd = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
             let truncated = if cmd.len() > 200 {
                 format!("{}...", super::truncate(cmd, 200))
             } else {
@@ -541,10 +551,7 @@ pub fn format_tool_input(tool_name: &str, input: &Value) -> String {
             format!("file=\"{path}\"")
         }
         "Glob" => {
-            let pattern = input
-                .get("pattern")
-                .and_then(|p| p.as_str())
-                .unwrap_or("");
+            let pattern = input.get("pattern").and_then(|p| p.as_str()).unwrap_or("");
             let path = input.get("path").and_then(|p| p.as_str());
             match path {
                 Some(p) => format!("pattern=\"{pattern}\" path=\"{p}\""),
@@ -552,10 +559,7 @@ pub fn format_tool_input(tool_name: &str, input: &Value) -> String {
             }
         }
         "Grep" => {
-            let pattern = input
-                .get("pattern")
-                .and_then(|p| p.as_str())
-                .unwrap_or("");
+            let pattern = input.get("pattern").and_then(|p| p.as_str()).unwrap_or("");
             let path = input.get("path").and_then(|p| p.as_str());
             match path {
                 Some(p) => format!("pattern=\"{pattern}\" path=\"{p}\""),
@@ -578,10 +582,7 @@ pub fn format_tool_input(tool_name: &str, input: &Value) -> String {
             format!("url=\"{url}\"")
         }
         "WebSearch" => {
-            let query = input
-                .get("query")
-                .and_then(|q| q.as_str())
-                .unwrap_or("");
+            let query = input.get("query").and_then(|q| q.as_str()).unwrap_or("");
             format!("query=\"{query}\"")
         }
         "TodoWrite" => {
@@ -627,14 +628,21 @@ fn parse_timestamp(s: &str) -> Option<DateTime<Utc>> {
 mod tests {
     use super::*;
 
-    fn make_session_record(session_id: &str, ts: &str, cwd: &str, record_type: &str, message: Value) -> String {
+    fn make_session_record(
+        session_id: &str,
+        ts: &str,
+        cwd: &str,
+        record_type: &str,
+        message: Value,
+    ) -> String {
         serde_json::json!({
             "type": record_type,
             "sessionId": session_id,
             "timestamp": ts,
             "cwd": cwd,
             "message": message,
-        }).to_string()
+        })
+        .to_string()
     }
 
     fn make_user_text(text: &str) -> Value {
@@ -668,14 +676,24 @@ mod tests {
     #[test]
     fn test_parse_minimal_session() {
         let lines = vec![
-            make_session_record("ses1", "2025-01-15T10:00:00Z", "/proj", "user",
-                make_user_text("hello")),
-            make_session_record("ses1", "2025-01-15T10:00:05Z", "/proj", "assistant",
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:00Z",
+                "/proj",
+                "user",
+                make_user_text("hello"),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:05Z",
+                "/proj",
+                "assistant",
                 make_assistant(
                     vec![serde_json::json!({"type": "text", "text": "Hi there!"})],
                     Some("claude-sonnet-4-5-20250929"),
                     None,
-                )),
+                ),
+            ),
         ];
         let session = ClaudeParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.metadata.session_id, "ses1");
@@ -689,9 +707,18 @@ mod tests {
     #[test]
     fn test_parse_tool_use_and_result() {
         let lines = vec![
-            make_session_record("ses1", "2025-01-15T10:00:00Z", "/proj", "user",
-                make_user_text("read a file")),
-            make_session_record("ses1", "2025-01-15T10:00:01Z", "/proj", "assistant",
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:00Z",
+                "/proj",
+                "user",
+                make_user_text("read a file"),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:01Z",
+                "/proj",
+                "assistant",
                 make_assistant(
                     vec![serde_json::json!({
                         "type": "tool_use",
@@ -701,13 +728,19 @@ mod tests {
                     })],
                     Some("claude-sonnet-4-5-20250929"),
                     None,
-                )),
-            make_session_record("ses1", "2025-01-15T10:00:02Z", "/proj", "user",
+                ),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:02Z",
+                "/proj",
+                "user",
                 make_user_array(vec![serde_json::json!({
                     "type": "tool_result",
                     "tool_use_id": "tool1",
                     "is_error": false,
-                })])),
+                })]),
+            ),
         ];
         let session = ClaudeParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.stats.tool_calls, 1);
@@ -718,9 +751,18 @@ mod tests {
     #[test]
     fn test_parse_tool_error() {
         let lines = vec![
-            make_session_record("ses1", "2025-01-15T10:00:00Z", "/proj", "user",
-                make_user_text("do something")),
-            make_session_record("ses1", "2025-01-15T10:00:01Z", "/proj", "assistant",
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:00Z",
+                "/proj",
+                "user",
+                make_user_text("do something"),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:01Z",
+                "/proj",
+                "assistant",
                 make_assistant(
                     vec![serde_json::json!({
                         "type": "tool_use",
@@ -730,13 +772,19 @@ mod tests {
                     })],
                     None,
                     None,
-                )),
-            make_session_record("ses1", "2025-01-15T10:00:02Z", "/proj", "user",
+                ),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:02Z",
+                "/proj",
+                "user",
                 make_user_array(vec![serde_json::json!({
                     "type": "tool_result",
                     "tool_use_id": "tool1",
                     "is_error": true,
-                })])),
+                })]),
+            ),
         ];
         let session = ClaudeParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.stats.tool_calls, 1);
@@ -746,21 +794,37 @@ mod tests {
     #[test]
     fn test_parse_file_write_and_edit_tracking() {
         let lines = vec![
-            make_session_record("ses1", "2025-01-15T10:00:00Z", "/proj", "user",
-                make_user_text("write a file")),
-            make_session_record("ses1", "2025-01-15T10:00:01Z", "/proj", "assistant",
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:00Z",
+                "/proj",
+                "user",
+                make_user_text("write a file"),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:01Z",
+                "/proj",
+                "assistant",
                 make_assistant(
                     vec![
                         serde_json::json!({"type": "tool_use", "id": "t1", "name": "Write", "input": {"file_path": "/a.rs"}}),
                         serde_json::json!({"type": "tool_use", "id": "t2", "name": "Edit", "input": {"file_path": "/b.rs"}}),
                     ],
-                    None, None,
-                )),
-            make_session_record("ses1", "2025-01-15T10:00:02Z", "/proj", "user",
+                    None,
+                    None,
+                ),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:02Z",
+                "/proj",
+                "user",
                 make_user_array(vec![
                     serde_json::json!({"type": "tool_result", "tool_use_id": "t1", "is_error": false}),
                     serde_json::json!({"type": "tool_result", "tool_use_id": "t2", "is_error": false}),
-                ])),
+                ]),
+            ),
         ];
         let session = ClaudeParser::parse_from_lines(lines.into_iter()).unwrap();
         assert!(session.stats.files_written.contains("/a.rs"));
@@ -770,37 +834,66 @@ mod tests {
     #[test]
     fn test_parse_model_change() {
         let lines = vec![
-            make_session_record("ses1", "2025-01-15T10:00:00Z", "/proj", "user",
-                make_user_text("hi")),
-            make_session_record("ses1", "2025-01-15T10:00:01Z", "/proj", "assistant",
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:00Z",
+                "/proj",
+                "user",
+                make_user_text("hi"),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:01Z",
+                "/proj",
+                "assistant",
                 make_assistant(
                     vec![serde_json::json!({"type": "text", "text": "hello"})],
                     Some("claude-sonnet-4-5-20250929"),
                     None,
-                )),
-            make_session_record("ses1", "2025-01-15T10:00:02Z", "/proj", "assistant",
+                ),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:02Z",
+                "/proj",
+                "assistant",
                 make_assistant(
                     vec![serde_json::json!({"type": "text", "text": "switching"})],
                     Some("claude-opus-4-5-20251101"),
                     None,
-                )),
+                ),
+            ),
         ];
         let session = ClaudeParser::parse_from_lines(lines.into_iter()).unwrap();
         // Should have ModelChange blocks
-        let model_changes: Vec<_> = session.messages.iter()
+        let model_changes: Vec<_> = session
+            .messages
+            .iter()
             .flat_map(|m| &m.content)
             .filter(|b| matches!(b, ContentBlock::ModelChange { .. }))
             .collect();
         assert_eq!(model_changes.len(), 2); // initial + change
-        assert_eq!(session.metadata.model, Some("claude-opus-4-5-20251101".to_string()));
+        assert_eq!(
+            session.metadata.model,
+            Some("claude-opus-4-5-20251101".to_string())
+        );
     }
 
     #[test]
     fn test_parse_token_usage() {
         let lines = vec![
-            make_session_record("ses1", "2025-01-15T10:00:00Z", "/proj", "user",
-                make_user_text("hi")),
-            make_session_record("ses1", "2025-01-15T10:00:01Z", "/proj", "assistant",
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:00Z",
+                "/proj",
+                "user",
+                make_user_text("hi"),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:01Z",
+                "/proj",
+                "assistant",
                 make_assistant(
                     vec![serde_json::json!({"type": "text", "text": "hello"})],
                     None,
@@ -810,7 +903,8 @@ mod tests {
                         "cache_read_input_tokens": 20,
                         "cache_creation_input_tokens": 10,
                     })),
-                )),
+                ),
+            ),
         ];
         let session = ClaudeParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.stats.total_tokens.input_tokens, 100);
@@ -831,8 +925,13 @@ mod tests {
         });
         let lines = vec![
             // Normal first record to establish metadata
-            make_session_record("ses1", "2025-01-15T10:00:00Z", "/proj", "user",
-                make_user_text("hello")),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:00Z",
+                "/proj",
+                "user",
+                make_user_text("hello"),
+            ),
             record.to_string(),
         ];
         let session = ClaudeParser::parse_from_lines(lines.into_iter()).unwrap();
@@ -842,13 +941,24 @@ mod tests {
     #[test]
     fn test_skip_xml_content() {
         let lines = vec![
-            make_session_record("ses1", "2025-01-15T10:00:00Z", "/proj", "user",
-                make_user_text("<system>some xml</system>")),
-            make_session_record("ses1", "2025-01-15T10:00:01Z", "/proj", "assistant",
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:00Z",
+                "/proj",
+                "user",
+                make_user_text("<system>some xml</system>"),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:01Z",
+                "/proj",
+                "assistant",
                 make_assistant(
                     vec![serde_json::json!({"type": "text", "text": "ok"})],
-                    None, None,
-                )),
+                    None,
+                    None,
+                ),
+            ),
         ];
         let session = ClaudeParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.stats.user_messages, 0); // XML content skipped
@@ -865,12 +975,19 @@ mod tests {
             "message": {},
         });
         let lines = vec![
-            make_session_record("ses1", "2025-01-15T10:00:00Z", "/proj", "user",
-                make_user_text("hello")),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:00Z",
+                "/proj",
+                "user",
+                make_user_text("hello"),
+            ),
             record.to_string(),
         ];
         let session = ClaudeParser::parse_from_lines(lines.into_iter()).unwrap();
-        let queue_ops: Vec<_> = session.messages.iter()
+        let queue_ops: Vec<_> = session
+            .messages
+            .iter()
             .flat_map(|m| &m.content)
             .filter(|b| matches!(b, ContentBlock::QueueOperation { .. }))
             .collect();
@@ -883,19 +1000,32 @@ mod tests {
     #[test]
     fn test_parse_thinking_block() {
         let lines = vec![
-            make_session_record("ses1", "2025-01-15T10:00:00Z", "/proj", "user",
-                make_user_text("think about this")),
-            make_session_record("ses1", "2025-01-15T10:00:01Z", "/proj", "assistant",
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:00Z",
+                "/proj",
+                "user",
+                make_user_text("think about this"),
+            ),
+            make_session_record(
+                "ses1",
+                "2025-01-15T10:00:01Z",
+                "/proj",
+                "assistant",
                 make_assistant(
                     vec![
                         serde_json::json!({"type": "thinking", "thinking": "let me think..."}),
                         serde_json::json!({"type": "text", "text": "here is my answer"}),
                     ],
-                    None, None,
-                )),
+                    None,
+                    None,
+                ),
+            ),
         ];
         let session = ClaudeParser::parse_from_lines(lines.into_iter()).unwrap();
-        let thinking: Vec<_> = session.messages.iter()
+        let thinking: Vec<_> = session
+            .messages
+            .iter()
             .flat_map(|m| &m.content)
             .filter(|b| matches!(b, ContentBlock::Thinking { .. }))
             .collect();
@@ -906,7 +1036,10 @@ mod tests {
 
     #[test]
     fn test_extract_queue_summary_with_tags() {
-        assert_eq!(extract_queue_summary("before <summary>the summary</summary> after"), "the summary");
+        assert_eq!(
+            extract_queue_summary("before <summary>the summary</summary> after"),
+            "the summary"
+        );
     }
 
     #[test]
@@ -952,7 +1085,10 @@ mod tests {
     #[test]
     fn test_format_tool_input_glob() {
         let input = serde_json::json!({"pattern": "*.rs", "path": "/src"});
-        assert_eq!(format_tool_input("Glob", &input), "pattern=\"*.rs\" path=\"/src\"");
+        assert_eq!(
+            format_tool_input("Glob", &input),
+            "pattern=\"*.rs\" path=\"/src\""
+        );
     }
 
     #[test]
@@ -976,13 +1112,19 @@ mod tests {
     #[test]
     fn test_format_tool_input_webfetch() {
         let input = serde_json::json!({"url": "https://example.com"});
-        assert_eq!(format_tool_input("WebFetch", &input), "url=\"https://example.com\"");
+        assert_eq!(
+            format_tool_input("WebFetch", &input),
+            "url=\"https://example.com\""
+        );
     }
 
     #[test]
     fn test_format_tool_input_websearch() {
         let input = serde_json::json!({"query": "rust testing"});
-        assert_eq!(format_tool_input("WebSearch", &input), "query=\"rust testing\"");
+        assert_eq!(
+            format_tool_input("WebSearch", &input),
+            "query=\"rust testing\""
+        );
     }
 
     #[test]

@@ -61,7 +61,8 @@ impl Parser for CodexParser {
     fn parse_session(&self, path: &Path) -> Result<Session, CassioError> {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
-        parse_lines(reader.lines().map(|l| l.unwrap_or_default()))
+        let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
+        parse_lines(lines.into_iter())
     }
 }
 
@@ -134,14 +135,33 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
 
         match record.record_type.as_str() {
             "session_meta" => {
-                let session_id = record.payload.get("id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let cwd = record.payload.get("cwd").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                let cli_version = record.payload.get("cli_version").and_then(|v| v.as_str()).map(|s| s.to_string());
-                let git_branch = record.payload.get("git")
+                let session_id = record
+                    .payload
+                    .get("id")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let cwd = record
+                    .payload
+                    .get("cwd")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let cli_version = record
+                    .payload
+                    .get("cli_version")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let git_branch = record
+                    .payload
+                    .get("git")
                     .and_then(|g| g.get("branch"))
                     .and_then(|b| b.as_str())
                     .map(|s| s.to_string());
-                let payload_ts = record.payload.get("timestamp").and_then(|v| v.as_str())
+                let payload_ts = record
+                    .payload
+                    .get("timestamp")
+                    .and_then(|v| v.as_str())
                     .and_then(|s| s.parse::<DateTime<Utc>>().ok());
 
                 metadata = Some(SessionMetadata {
@@ -156,56 +176,95 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                 });
             }
             "response_item" => {
-                let payload_type = record.payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let payload_type = record
+                    .payload
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 match payload_type {
                     "message" => {
-                        let role = record.payload.get("role").and_then(|v| v.as_str()).unwrap_or("");
+                        let role = record
+                            .payload
+                            .get("role")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         if role == "user" {
                             // Skip - duplicated from event_msg
                             continue;
                         }
                         if role == "assistant"
-                            && let Some(content) = record.payload.get("content").and_then(|c| c.as_array()) {
-                                let mut blocks = Vec::new();
-                                let mut has_text = false;
-                                for block in content {
-                                    let bt = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-                                    if bt == "output_text" {
-                                        let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("").trim();
-                                        if !text.is_empty() {
-                                            blocks.push(ContentBlock::Text { text: text.to_string() });
-                                            has_text = true;
-                                        }
+                            && let Some(content) =
+                                record.payload.get("content").and_then(|c| c.as_array())
+                        {
+                            let mut blocks = Vec::new();
+                            let mut has_text = false;
+                            for block in content {
+                                let bt = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                                if bt == "output_text" {
+                                    let text = block
+                                        .get("text")
+                                        .and_then(|t| t.as_str())
+                                        .unwrap_or("")
+                                        .trim();
+                                    if !text.is_empty() {
+                                        blocks.push(ContentBlock::Text {
+                                            text: text.to_string(),
+                                        });
+                                        has_text = true;
                                     }
                                 }
-                                if has_text {
-                                    stats.assistant_messages += 1;
-                                }
-                                if !blocks.is_empty() {
-                                    messages.push(Message {
-                                        role: Role::Assistant,
-                                        timestamp: ts,
-                                        model: current_model.clone(),
-                                        content: blocks,
-                                        usage: None,
-                                    });
-                                }
                             }
+                            if has_text {
+                                stats.assistant_messages += 1;
+                            }
+                            if !blocks.is_empty() {
+                                messages.push(Message {
+                                    role: Role::Assistant,
+                                    timestamp: ts,
+                                    model: current_model.clone(),
+                                    content: blocks,
+                                    usage: None,
+                                });
+                            }
+                        }
                     }
                     "function_call" => {
-                        let call_id = record.payload.get("call_id").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let name = record.payload.get("name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                        let args = record.payload.get("arguments").and_then(|v| v.as_str()).unwrap_or("{}").to_string();
+                        let call_id = record
+                            .payload
+                            .get("call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let name = record
+                            .payload
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let args = record
+                            .payload
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("{}")
+                            .to_string();
                         if !call_id.is_empty() {
                             pending_functions.insert(call_id, (name, args));
                         }
                     }
                     "function_call_output" => {
-                        let call_id = record.payload.get("call_id").and_then(|v| v.as_str()).unwrap_or("");
+                        let call_id = record
+                            .payload
+                            .get("call_id")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("");
                         if let Some((name, args_json)) = pending_functions.remove(call_id) {
                             stats.tool_calls += 1;
 
-                            let output = record.payload.get("output").and_then(|v| v.as_str()).unwrap_or("");
+                            let output = record
+                                .payload
+                                .get("output")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("");
                             let is_error = serde_json::from_str::<Value>(output)
                                 .ok()
                                 .and_then(|v| v.get("exit_code")?.as_i64())
@@ -216,29 +275,42 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
 
                             // Track file operations from shell commands
                             if name == "shell"
-                                && let Ok(args) = serde_json::from_str::<Value>(&args_json) {
-                                    let cmd = args.get("command")
-                                        .map(|c| {
-                                            if let Some(arr) = c.as_array() {
-                                                arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" ")
-                                            } else {
-                                                c.as_str().unwrap_or("").to_string()
-                                            }
-                                        })
-                                        .unwrap_or_default();
-                                    // Track read operations
-                                    let re_patterns = ["cat ", "less ", "head ", "tail ", "bat "];
-                                    for pat in &re_patterns {
-                                        if let Some(idx) = cmd.find(pat) {
-                                            let rest = &cmd[idx + pat.len()..];
-                                            let path = rest.trim_start_matches(['\'', '"']);
-                                            let end = path.find(|c: char| c.is_whitespace() || c == '\'' || c == '"' || c == '|' || c == '>').unwrap_or(path.len());
-                                            if end > 0 {
-                                                stats.files_read.insert(path[..end].to_string());
-                                            }
+                                && let Ok(args) = serde_json::from_str::<Value>(&args_json)
+                            {
+                                let cmd = args
+                                    .get("command")
+                                    .map(|c| {
+                                        if let Some(arr) = c.as_array() {
+                                            arr.iter()
+                                                .filter_map(|v| v.as_str())
+                                                .collect::<Vec<_>>()
+                                                .join(" ")
+                                        } else {
+                                            c.as_str().unwrap_or("").to_string()
+                                        }
+                                    })
+                                    .unwrap_or_default();
+                                // Track read operations
+                                let re_patterns = ["cat ", "less ", "head ", "tail ", "bat "];
+                                for pat in &re_patterns {
+                                    if let Some(idx) = cmd.find(pat) {
+                                        let rest = &cmd[idx + pat.len()..];
+                                        let path = rest.trim_start_matches(['\'', '"']);
+                                        let end = path
+                                            .find(|c: char| {
+                                                c.is_whitespace()
+                                                    || c == '\''
+                                                    || c == '"'
+                                                    || c == '|'
+                                                    || c == '>'
+                                            })
+                                            .unwrap_or(path.len());
+                                        if end > 0 {
+                                            stats.files_read.insert(path[..end].to_string());
                                         }
                                     }
                                 }
+                            }
 
                             let summary = format_codex_function(&name, &args_json);
                             messages.push(Message {
@@ -262,74 +334,104 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                 }
             }
             "event_msg" => {
-                let payload_type = record.payload.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                let payload_type = record
+                    .payload
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 if payload_type == "token_count" {
                     if let Some(info) = record.payload.get("info")
-                        && let Some(total) = info.get("total_token_usage") {
-                            let input = total.get("input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let cached = total.get("cached_input_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let output = total.get("output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            let reasoning = total.get("reasoning_output_tokens").and_then(|v| v.as_u64()).unwrap_or(0);
-                            // total_token_usage is cumulative, so always overwrite with the latest
-                            stats.total_tokens = TokenUsage {
-                                input_tokens: input,
-                                output_tokens: output + reasoning,
-                                cache_read_tokens: cached,
-                                cache_creation_tokens: 0,
-                            };
-                        }
+                        && let Some(total) = info.get("total_token_usage")
+                    {
+                        let input = total
+                            .get("input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let cached = total
+                            .get("cached_input_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let output = total
+                            .get("output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        let reasoning = total
+                            .get("reasoning_output_tokens")
+                            .and_then(|v| v.as_u64())
+                            .unwrap_or(0);
+                        // total_token_usage is cumulative, so always overwrite with the latest
+                        stats.total_tokens = TokenUsage {
+                            input_tokens: input,
+                            output_tokens: output + reasoning,
+                            cache_read_tokens: cached,
+                            cache_creation_tokens: 0,
+                        };
+                    }
                 } else if payload_type == "user_message"
-                    && let Some(msg) = record.payload.get("message").and_then(|v| v.as_str()) {
-                        // Clean up message - remove context blocks and file refs
-                        let mut text = msg.to_string();
-                        // Remove <context ref="...">...</context>
-                        while let Some(start) = text.find("<context ref=\"") {
-                            if let Some(end) = text[start..].find("</context>") {
-                                text = format!("{}{}", &text[..start], &text[start + end + "</context>".len()..]);
-                            } else {
-                                break;
-                            }
-                        }
-                        // Remove [@file](url) references
-                        while let Some(start) = text.find("[@") {
-                            if let Some(paren_end) = text[start..].find(')') {
-                                text = format!("{}{}", &text[..start], text[start + paren_end + 1..].trim_start());
-                            } else {
-                                break;
-                            }
-                        }
-                        let text = text.trim().to_string();
-                        if !text.is_empty() {
-                            stats.user_messages += 1;
-                            messages.push(Message {
-                                role: Role::User,
-                                timestamp: ts,
-                                model: None,
-                                content: vec![ContentBlock::Text { text }],
-                                usage: None,
-                            });
+                    && let Some(msg) = record.payload.get("message").and_then(|v| v.as_str())
+                {
+                    // Clean up message - remove context blocks and file refs
+                    let mut text = msg.to_string();
+                    // Remove <context ref="...">...</context>
+                    while let Some(start) = text.find("<context ref=\"") {
+                        if let Some(end) = text[start..].find("</context>") {
+                            text = format!(
+                                "{}{}",
+                                &text[..start],
+                                &text[start + end + "</context>".len()..]
+                            );
+                        } else {
+                            break;
                         }
                     }
+                    // Remove [@file](url) references
+                    while let Some(start) = text.find("[@") {
+                        if let Some(paren_end) = text[start..].find(')') {
+                            text = format!(
+                                "{}{}",
+                                &text[..start],
+                                text[start + paren_end + 1..].trim_start()
+                            );
+                        } else {
+                            break;
+                        }
+                    }
+                    let text = text.trim().to_string();
+                    if !text.is_empty() {
+                        stats.user_messages += 1;
+                        messages.push(Message {
+                            role: Role::User,
+                            timestamp: ts,
+                            model: None,
+                            content: vec![ContentBlock::Text { text }],
+                            usage: None,
+                        });
+                    }
+                }
             }
             "turn_context" => {
                 let model = record.payload.get("model").and_then(|v| v.as_str());
                 if let Some(m) = model
-                    && current_model.as_deref() != Some(m) {
-                        current_model = Some(m.to_string());
-                        messages.push(Message {
-                            role: Role::System,
-                            timestamp: ts,
-                            model: Some(m.to_string()),
-                            content: vec![ContentBlock::ModelChange { model: m.to_string() }],
-                            usage: None,
-                        });
-                    }
+                    && current_model.as_deref() != Some(m)
+                {
+                    current_model = Some(m.to_string());
+                    messages.push(Message {
+                        role: Role::System,
+                        timestamp: ts,
+                        model: Some(m.to_string()),
+                        content: vec![ContentBlock::ModelChange {
+                            model: m.to_string(),
+                        }],
+                        usage: None,
+                    });
+                }
             }
             _ => {}
         }
     }
 
-    let mut meta = metadata.ok_or_else(|| CassioError::Other("No session_meta record found".into()))?;
+    let mut meta =
+        metadata.ok_or_else(|| CassioError::Other("No session_meta record found".into()))?;
     meta.model = current_model;
 
     if let (Some(first), Some(last)) = (first_timestamp, last_timestamp) {
@@ -355,16 +457,24 @@ pub(crate) fn format_codex_function(name: &str, args_json: &str) -> String {
 
     match name {
         "shell" => {
-            let cmd = args.get("command")
+            let cmd = args
+                .get("command")
                 .map(|c| {
                     if let Some(arr) = c.as_array() {
-                        arr.iter().filter_map(|v| v.as_str()).collect::<Vec<_>>().join(" ")
+                        arr.iter()
+                            .filter_map(|v| v.as_str())
+                            .collect::<Vec<_>>()
+                            .join(" ")
                     } else {
                         c.as_str().unwrap_or("").to_string()
                     }
                 })
                 .unwrap_or_default();
-            let truncated = if cmd.len() > 200 { format!("{}...", super::truncate(&cmd, 200)) } else { cmd };
+            let truncated = if cmd.len() > 200 {
+                format!("{}...", super::truncate(&cmd, 200))
+            } else {
+                cmd
+            };
             truncated.replace('\n', " ")
         }
         "read_file" => {
@@ -377,7 +487,8 @@ pub(crate) fn format_codex_function(name: &str, args_json: &str) -> String {
         }
         "update_plan" => {
             if let Some(plan) = args.get("plan").and_then(|p| p.as_array()) {
-                let summary: String = plan.iter()
+                let summary: String = plan
+                    .iter()
                     .filter_map(|s| {
                         let step = s.get("step").and_then(|v| v.as_str())?;
                         let status = s.get("status").and_then(|v| v.as_str())?;
@@ -385,15 +496,27 @@ pub(crate) fn format_codex_function(name: &str, args_json: &str) -> String {
                     })
                     .collect::<Vec<_>>()
                     .join("; ");
-                if summary.len() > 150 { format!("{}...", super::truncate(&summary, 150)) } else { summary }
+                if summary.len() > 150 {
+                    format!("{}...", super::truncate(&summary, 150))
+                } else {
+                    summary
+                }
             } else {
                 let s = serde_json::to_string(&args).unwrap_or_default();
-                if s.len() > 150 { format!("{}...", super::truncate(&s, 150)) } else { s }
+                if s.len() > 150 {
+                    format!("{}...", super::truncate(&s, 150))
+                } else {
+                    s
+                }
             }
         }
         _ => {
             let s = serde_json::to_string(&args).unwrap_or_default();
-            if s.len() > 150 { format!("{}...", super::truncate(&s, 150)) } else { s }
+            if s.len() > 150 {
+                format!("{}...", super::truncate(&s, 150))
+            } else {
+                s
+            }
         }
     }
 }
@@ -407,7 +530,8 @@ mod tests {
             "type": record_type,
             "timestamp": ts,
             "payload": payload,
-        }).to_string()
+        })
+        .to_string()
     }
 
     fn session_meta(id: &str, cwd: &str) -> Value {
@@ -437,9 +561,17 @@ mod tests {
     #[test]
     fn test_parse_minimal_codex_session() {
         let lines = vec![
-            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
+            make_record(
+                "session_meta",
+                "2025-01-15T10:00:00Z",
+                session_meta("s1", "/proj"),
+            ),
             make_record("event_msg", "2025-01-15T10:00:01Z", user_message("hello")),
-            make_record("response_item", "2025-01-15T10:00:02Z", assistant_message("hi there")),
+            make_record(
+                "response_item",
+                "2025-01-15T10:00:02Z",
+                assistant_message("hi there"),
+            ),
         ];
         let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.metadata.session_id, "s1");
@@ -452,18 +584,30 @@ mod tests {
     #[test]
     fn test_parse_function_call_and_output() {
         let lines = vec![
-            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
-            make_record("response_item", "2025-01-15T10:00:01Z", serde_json::json!({
-                "type": "function_call",
-                "call_id": "c1",
-                "name": "shell",
-                "arguments": "{\"command\":\"ls\"}",
-            })),
-            make_record("response_item", "2025-01-15T10:00:02Z", serde_json::json!({
-                "type": "function_call_output",
-                "call_id": "c1",
-                "output": "{\"exit_code\":0,\"stdout\":\"files\"}",
-            })),
+            make_record(
+                "session_meta",
+                "2025-01-15T10:00:00Z",
+                session_meta("s1", "/proj"),
+            ),
+            make_record(
+                "response_item",
+                "2025-01-15T10:00:01Z",
+                serde_json::json!({
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "shell",
+                    "arguments": "{\"command\":\"ls\"}",
+                }),
+            ),
+            make_record(
+                "response_item",
+                "2025-01-15T10:00:02Z",
+                serde_json::json!({
+                    "type": "function_call_output",
+                    "call_id": "c1",
+                    "output": "{\"exit_code\":0,\"stdout\":\"files\"}",
+                }),
+            ),
         ];
         let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.stats.tool_calls, 1);
@@ -473,18 +617,30 @@ mod tests {
     #[test]
     fn test_parse_function_error() {
         let lines = vec![
-            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
-            make_record("response_item", "2025-01-15T10:00:01Z", serde_json::json!({
-                "type": "function_call",
-                "call_id": "c1",
-                "name": "shell",
-                "arguments": "{}",
-            })),
-            make_record("response_item", "2025-01-15T10:00:02Z", serde_json::json!({
-                "type": "function_call_output",
-                "call_id": "c1",
-                "output": "{\"exit_code\":1,\"stderr\":\"error\"}",
-            })),
+            make_record(
+                "session_meta",
+                "2025-01-15T10:00:00Z",
+                session_meta("s1", "/proj"),
+            ),
+            make_record(
+                "response_item",
+                "2025-01-15T10:00:01Z",
+                serde_json::json!({
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "shell",
+                    "arguments": "{}",
+                }),
+            ),
+            make_record(
+                "response_item",
+                "2025-01-15T10:00:02Z",
+                serde_json::json!({
+                    "type": "function_call_output",
+                    "call_id": "c1",
+                    "output": "{\"exit_code\":1,\"stderr\":\"error\"}",
+                }),
+            ),
         ];
         let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.stats.tool_calls, 1);
@@ -494,14 +650,24 @@ mod tests {
     #[test]
     fn test_parse_model_change_via_turn_context() {
         let lines = vec![
-            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
-            make_record("turn_context", "2025-01-15T10:00:01Z", serde_json::json!({
-                "model": "o3-pro",
-            })),
+            make_record(
+                "session_meta",
+                "2025-01-15T10:00:00Z",
+                session_meta("s1", "/proj"),
+            ),
+            make_record(
+                "turn_context",
+                "2025-01-15T10:00:01Z",
+                serde_json::json!({
+                    "model": "o3-pro",
+                }),
+            ),
         ];
         let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.metadata.model, Some("o3-pro".to_string()));
-        let model_changes: Vec<_> = session.messages.iter()
+        let model_changes: Vec<_> = session
+            .messages
+            .iter()
             .flat_map(|m| &m.content)
             .filter(|b| matches!(b, ContentBlock::ModelChange { .. }))
             .collect();
@@ -511,15 +677,30 @@ mod tests {
     #[test]
     fn test_user_message_cleanup_context_blocks() {
         let lines = vec![
-            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
-            make_record("event_msg", "2025-01-15T10:00:01Z",
-                user_message("do this <context ref=\"file.rs\">content</context> please")),
+            make_record(
+                "session_meta",
+                "2025-01-15T10:00:00Z",
+                session_meta("s1", "/proj"),
+            ),
+            make_record(
+                "event_msg",
+                "2025-01-15T10:00:01Z",
+                user_message("do this <context ref=\"file.rs\">content</context> please"),
+            ),
         ];
         let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
-        let user_texts: Vec<_> = session.messages.iter()
+        let user_texts: Vec<_> = session
+            .messages
+            .iter()
             .filter(|m| m.role == Role::User)
             .flat_map(|m| &m.content)
-            .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+            .filter_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(user_texts.len(), 1);
         assert!(!user_texts[0].contains("<context"));
@@ -530,15 +711,30 @@ mod tests {
     #[test]
     fn test_user_message_cleanup_file_refs() {
         let lines = vec![
-            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
-            make_record("event_msg", "2025-01-15T10:00:01Z",
-                user_message("fix [@main.rs](http://example.com) now")),
+            make_record(
+                "session_meta",
+                "2025-01-15T10:00:00Z",
+                session_meta("s1", "/proj"),
+            ),
+            make_record(
+                "event_msg",
+                "2025-01-15T10:00:01Z",
+                user_message("fix [@main.rs](http://example.com) now"),
+            ),
         ];
         let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
-        let user_texts: Vec<_> = session.messages.iter()
+        let user_texts: Vec<_> = session
+            .messages
+            .iter()
             .filter(|m| m.role == Role::User)
             .flat_map(|m| &m.content)
-            .filter_map(|b| if let ContentBlock::Text { text } = b { Some(text.as_str()) } else { None })
+            .filter_map(|b| {
+                if let ContentBlock::Text { text } = b {
+                    Some(text.as_str())
+                } else {
+                    None
+                }
+            })
             .collect();
         assert_eq!(user_texts.len(), 1);
         assert!(!user_texts[0].contains("[@"));
@@ -547,7 +743,11 @@ mod tests {
     #[test]
     fn test_duration_calculation() {
         let lines = vec![
-            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
+            make_record(
+                "session_meta",
+                "2025-01-15T10:00:00Z",
+                session_meta("s1", "/proj"),
+            ),
             make_record("event_msg", "2025-01-15T10:05:00Z", user_message("hi")),
         ];
         let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
@@ -556,9 +756,11 @@ mod tests {
 
     #[test]
     fn test_no_session_meta_errors() {
-        let lines = vec![
-            make_record("event_msg", "2025-01-15T10:00:00Z", user_message("hello")),
-        ];
+        let lines = vec![make_record(
+            "event_msg",
+            "2025-01-15T10:00:00Z",
+            user_message("hello"),
+        )];
         let result = CodexParser::parse_from_lines(lines.into_iter());
         assert!(result.is_err());
     }
@@ -591,8 +793,10 @@ mod tests {
 
     #[test]
     fn test_format_codex_function_update_plan() {
-        let result = format_codex_function("update_plan",
-            r#"{"plan":[{"step":"do thing","status":"done"},{"step":"next","status":"pending"}]}"#);
+        let result = format_codex_function(
+            "update_plan",
+            r#"{"plan":[{"step":"do thing","status":"done"},{"step":"next","status":"pending"}]}"#,
+        );
         assert!(result.contains("done: do thing"));
         assert!(result.contains("pending: next"));
     }
@@ -606,32 +810,44 @@ mod tests {
     #[test]
     fn test_token_count_extraction() {
         let lines = vec![
-            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
-            make_record("event_msg", "2025-01-15T10:00:01Z", serde_json::json!({
-                "type": "token_count",
-                "info": {
-                    "total_token_usage": {
-                        "input_tokens": 5402,
-                        "cached_input_tokens": 3072,
-                        "output_tokens": 237,
-                        "reasoning_output_tokens": 192,
-                        "total_tokens": 5639
+            make_record(
+                "session_meta",
+                "2025-01-15T10:00:00Z",
+                session_meta("s1", "/proj"),
+            ),
+            make_record(
+                "event_msg",
+                "2025-01-15T10:00:01Z",
+                serde_json::json!({
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 5402,
+                            "cached_input_tokens": 3072,
+                            "output_tokens": 237,
+                            "reasoning_output_tokens": 192,
+                            "total_tokens": 5639
+                        }
                     }
-                }
-            })),
+                }),
+            ),
             // A later token_count should overwrite (cumulative)
-            make_record("event_msg", "2025-01-15T10:00:05Z", serde_json::json!({
-                "type": "token_count",
-                "info": {
-                    "total_token_usage": {
-                        "input_tokens": 10000,
-                        "cached_input_tokens": 6000,
-                        "output_tokens": 500,
-                        "reasoning_output_tokens": 300,
-                        "total_tokens": 16800
+            make_record(
+                "event_msg",
+                "2025-01-15T10:00:05Z",
+                serde_json::json!({
+                    "type": "token_count",
+                    "info": {
+                        "total_token_usage": {
+                            "input_tokens": 10000,
+                            "cached_input_tokens": 6000,
+                            "output_tokens": 500,
+                            "reasoning_output_tokens": 300,
+                            "total_tokens": 16800
+                        }
                     }
-                }
-            })),
+                }),
+            ),
         ];
         let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.stats.total_tokens.input_tokens, 10000);
@@ -642,12 +858,20 @@ mod tests {
     #[test]
     fn test_token_count_null_info() {
         let lines = vec![
-            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
-            make_record("event_msg", "2025-01-15T10:00:01Z", serde_json::json!({
-                "type": "token_count",
-                "info": null,
-                "rate_limits": {}
-            })),
+            make_record(
+                "session_meta",
+                "2025-01-15T10:00:00Z",
+                session_meta("s1", "/proj"),
+            ),
+            make_record(
+                "event_msg",
+                "2025-01-15T10:00:01Z",
+                serde_json::json!({
+                    "type": "token_count",
+                    "info": null,
+                    "rate_limits": {}
+                }),
+            ),
         ];
         let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
         assert_eq!(session.stats.total_tokens.input_tokens, 0);
@@ -657,18 +881,30 @@ mod tests {
     #[test]
     fn test_file_read_tracking_from_shell() {
         let lines = vec![
-            make_record("session_meta", "2025-01-15T10:00:00Z", session_meta("s1", "/proj")),
-            make_record("response_item", "2025-01-15T10:00:01Z", serde_json::json!({
-                "type": "function_call",
-                "call_id": "c1",
-                "name": "shell",
-                "arguments": "{\"command\":\"cat /foo/bar.rs\"}",
-            })),
-            make_record("response_item", "2025-01-15T10:00:02Z", serde_json::json!({
-                "type": "function_call_output",
-                "call_id": "c1",
-                "output": "{\"exit_code\":0}",
-            })),
+            make_record(
+                "session_meta",
+                "2025-01-15T10:00:00Z",
+                session_meta("s1", "/proj"),
+            ),
+            make_record(
+                "response_item",
+                "2025-01-15T10:00:01Z",
+                serde_json::json!({
+                    "type": "function_call",
+                    "call_id": "c1",
+                    "name": "shell",
+                    "arguments": "{\"command\":\"cat /foo/bar.rs\"}",
+                }),
+            ),
+            make_record(
+                "response_item",
+                "2025-01-15T10:00:02Z",
+                serde_json::json!({
+                    "type": "function_call_output",
+                    "call_id": "c1",
+                    "output": "{\"exit_code\":0}",
+                }),
+            ),
         ];
         let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
         assert!(session.stats.files_read.contains("/foo/bar.rs"));
