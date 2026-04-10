@@ -429,6 +429,7 @@ fn run_single_file(
 
     let stdout = io::stdout();
     let mut writer = stdout.lock();
+    let session = cassio::redact::redact_session(&session);
     formatter.format(&session, &mut writer)?;
     Ok(())
 }
@@ -479,6 +480,7 @@ fn run_stdin(formatter: &dyn Formatter, filter_dir: Option<&Path>) -> Result<(),
 
     let stdout = io::stdout();
     let mut writer = stdout.lock();
+    let session = cassio::redact::redact_session(&session);
     formatter.format(&session, &mut writer)?;
     Ok(())
 }
@@ -667,6 +669,7 @@ fn process_file_list(
                         fs::create_dir_all(parent)?;
                     }
                     let mut file = fs::File::create(&out_path)?;
+                    let session = cassio::redact::redact_session(&session);
                     formatter.format(&session, &mut file)?;
                     processed += 1;
                 }

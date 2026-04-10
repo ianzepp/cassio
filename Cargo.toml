@@ -17,3 +17,4 @@ toml = "0.8"
 toml_edit = "0.22"
 walkdir = "2"
 ureq = { version = "3", features = ["json"] }
+regex = "1"

@@ -7,4 +7,5 @@ pub mod formatter;
 pub mod git;
 pub mod parser;
 pub mod pricing;
+pub mod redact;
 pub mod summary;
