@@ -41,6 +41,7 @@ use cassio::discover;
 use cassio::error::CassioError;
 use cassio::formatter::{Formatter, OutputFormat};
 use cassio::parser::Parser;
+use cassio::training::ParsedSession;
 
 #[derive(ClapParser)]
 #[command(name = "cassio", about = "AI transcript processor")]
@@ -247,7 +248,6 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         .format
                         .parse()
                         .map_err(|e: String| CassioError::Other(e))?;
-                    let formatter = format.formatter();
                     let sources = discover::discover_all_sources_with_config(&config.sources);
                     if sources.is_empty() {
                         eprintln!("No session sources found, skipping.");
@@ -267,7 +267,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                                 &files,
                                 &output_dir,
                                 cli.force,
-                                &*formatter,
+                                format,
                                 cli.filter_dir.as_deref(),
                                 cli.dry_run,
                             )?;
@@ -392,44 +392,43 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
         .format
         .parse()
         .map_err(|e: String| CassioError::Other(e))?;
-    let formatter = format.formatter();
-
     if cli.all {
-        return run_all_mode(&cli, &config, &*formatter);
+        return run_all_mode(&cli, &config, format);
     }
 
     match cli.path {
-        Some(ref path) if path.is_dir() => run_batch_mode(path, &cli, &config, &*formatter),
+        Some(ref path) if path.is_dir() => run_batch_mode(path, &cli, &config, format),
         Some(ref path) if path.is_file() => {
-            run_single_file(path, &*formatter, cli.filter_dir.as_deref())
+            run_single_file(path, format, cli.filter_dir.as_deref())
         }
         Some(ref path) => Err(CassioError::Other(format!(
             "Path not found: {}",
             path.display()
         ))),
-        None => run_stdin(&*formatter, cli.filter_dir.as_deref()),
+        None => run_stdin(format, cli.filter_dir.as_deref()),
     }
 }
 
 /// Parse and format a single session file, writing output to stdout.
 fn run_single_file(
     path: &Path,
-    formatter: &dyn Formatter,
+    format: OutputFormat,
     filter_dir: Option<&Path>,
 ) -> Result<(), CassioError> {
     let parser = cassio::parser::detect_parser(path)?;
-    let session = parser.parse_session(path)?;
+    let parsed = parser.parse_export(path)?;
 
     if let Some(filter) = filter_dir {
         let filter_str = filter.to_string_lossy();
-        if !session
+        if !parsed
+            .session
             .metadata
             .project_path
             .starts_with(filter_str.as_ref())
         {
             eprintln!(
                 "Skipping: session project path '{}' does not match --filter-dir",
-                session.metadata.project_path
+                parsed.session.metadata.project_path
             );
             return Ok(());
         }
@@ -437,8 +436,8 @@ fn run_single_file(
 
     let stdout = io::stdout();
     let mut writer = stdout.lock();
-    let session = cassio::redact::redact_session(&session);
-    formatter.format(&session, &mut writer)?;
+    let parsed = cassio::redact::redact_export(&parsed);
+    format.formatter().format(&parsed, &mut writer)?;
     Ok(())
 }
 
@@ -448,7 +447,7 @@ fn run_single_file(
 /// requires peeking at the first line, but the parser needs all lines. An
 /// alternative would be a two-pass approach, but that would require the input
 /// to be seekable (stdin is not).
-fn run_stdin(formatter: &dyn Formatter, filter_dir: Option<&Path>) -> Result<(), CassioError> {
+fn run_stdin(format: OutputFormat, filter_dir: Option<&Path>) -> Result<(), CassioError> {
     let stdin = io::stdin();
     let reader = stdin.lock();
     let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
@@ -488,8 +487,38 @@ fn run_stdin(formatter: &dyn Formatter, filter_dir: Option<&Path>) -> Result<(),
 
     let stdout = io::stdout();
     let mut writer = stdout.lock();
-    let session = cassio::redact::redact_session(&session);
-    formatter.format(&session, &mut writer)?;
+    let parsed = ParsedSession {
+        training: cassio::training::TrainingSession::new(
+            "stdin.v1",
+            cassio::training::TrainingSource {
+                tool: session.metadata.tool.to_string(),
+                source_path: "stdin".to_string(),
+                session_id: session.metadata.session_id.clone(),
+                source_hash: cassio::training::hash_named_chunks([(
+                    "stdin",
+                    serde_json::to_string(&session).unwrap_or_default(),
+                )]),
+                source_record_count: None,
+                source_format: None,
+                source_root: None,
+            },
+            cassio::training::TrainingMetadata {
+                project_path_raw: session.metadata.project_path.clone(),
+                project_path_sanitized: session.metadata.project_path.clone(),
+                started_at: session.metadata.started_at,
+                ended_at: None,
+                git_branch: session.metadata.git_branch.clone(),
+                title: session.metadata.title.clone(),
+                session_kind: session.metadata.session_kind.to_string(),
+                models_seen: session.metadata.model.clone().into_iter().collect(),
+                version: session.metadata.version.clone(),
+            },
+            cassio::training::training_stats_from_session(&session.stats),
+        ),
+        session,
+    };
+    let parsed = cassio::redact::redact_export(&parsed);
+    format.formatter().format(&parsed, &mut writer)?;
     Ok(())
 }
 
@@ -502,7 +531,7 @@ fn run_batch_mode(
     dir: &Path,
     cli: &Cli,
     config: &Config,
-    formatter: &dyn Formatter,
+    format: OutputFormat,
 ) -> Result<(), CassioError> {
     let output_dir = cli
         .output
@@ -521,7 +550,7 @@ fn run_batch_mode(
         &files,
         output_dir,
         cli.force,
-        formatter,
+        format,
         cli.filter_dir.as_deref(),
         cli.dry_run,
     )?;
@@ -542,7 +571,7 @@ fn run_batch_mode(
 /// Uses `discover::discover_all_sources_with_config` to find source directories,
 /// then calls `process_file_list` for each tool. Sources that don't exist on this
 /// machine are silently skipped. Errors if no sources are found at all.
-fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result<(), CassioError> {
+fn run_all_mode(cli: &Cli, config: &Config, format: OutputFormat) -> Result<(), CassioError> {
     let output_dir = cli
         .output
         .as_ref()
@@ -582,7 +611,7 @@ fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result
             &files,
             output_dir,
             cli.force,
-            formatter,
+            format,
             cli.filter_dir.as_deref(),
             cli.dry_run,
         )?;
@@ -621,7 +650,7 @@ fn process_file_list(
     files: &[(Tool, PathBuf)],
     output_dir: &Path,
     force: bool,
-    formatter: &dyn Formatter,
+    format: OutputFormat,
     filter_dir: Option<&Path>,
     dry_run: bool,
 ) -> Result<(), CassioError> {
@@ -644,8 +673,10 @@ fn process_file_list(
             continue;
         }
 
-        let (folder, filename) = derive_output_path_for(*tool, path)?;
-        let out_path = output_dir.join(&folder).join(&filename);
+        let (folder, stem) = derive_output_stem_for(*tool, path)?;
+        let out_path = output_dir
+            .join(&folder)
+            .join(output_filename(stem.as_str(), format));
 
         if !force && is_up_to_date(path, &out_path) {
             up_to_date += 1;
@@ -658,16 +689,19 @@ fn process_file_list(
             Tool::OpenCode => Box::new(cassio::parser::opencode::OpenCodeParser),
         };
 
-        match parser.parse_session(path) {
-            Ok(session) => {
-                if session.stats.user_messages == 0 && session.stats.assistant_messages == 0 {
+        match parser.parse_export(path) {
+            Ok(parsed) => {
+                if parsed.session.stats.user_messages == 0
+                    && parsed.session.stats.assistant_messages == 0
+                {
                     skipped += 1;
                     continue;
                 }
 
                 if let Some(filter) = filter_dir {
                     let filter_str = filter.to_string_lossy();
-                    if !session
+                    if !parsed
+                        .session
                         .metadata
                         .project_path
                         .starts_with(filter_str.as_ref())
@@ -679,14 +713,32 @@ fn process_file_list(
 
                 if dry_run {
                     eprintln!("  would write: {}", out_path.display());
+                    if format == OutputFormat::EmojiText {
+                        eprintln!(
+                            "  would write: {}",
+                            output_dir
+                                .join(&folder)
+                                .join(format!("{stem}.training.json"))
+                                .display()
+                        );
+                    }
                     processed += 1;
                 } else {
                     if let Some(parent) = out_path.parent() {
                         fs::create_dir_all(parent)?;
                     }
+                    let parsed = cassio::redact::redact_export(&parsed);
+                    let formatter = format.formatter();
                     let mut file = fs::File::create(&out_path)?;
-                    let session = cassio::redact::redact_session(&session);
-                    formatter.format(&session, &mut file)?;
+                    formatter.format(&parsed, &mut file)?;
+                    if format == OutputFormat::EmojiText {
+                        let training_path = output_dir
+                            .join(&folder)
+                            .join(format!("{stem}.training.json"));
+                        let mut training_file = fs::File::create(training_path)?;
+                        cassio::formatter::training_json::TrainingJsonFormatter
+                            .format(&parsed, &mut training_file)?;
+                    }
                     processed += 1;
                 }
             }
@@ -706,7 +758,7 @@ fn process_file_list(
 /// OpenCode requires reading the session JSON to get a timestamp (since its session
 /// IDs are opaque), so this function handles that case directly. Other tools delegate
 /// to `discover::derive_output_path`.
-fn derive_output_path_for(tool: Tool, path: &Path) -> Result<(String, String), CassioError> {
+fn derive_output_stem_for(tool: Tool, path: &Path) -> Result<(String, String), CassioError> {
     match tool {
         Tool::OpenCode => {
             let session_id = path
@@ -743,13 +795,24 @@ fn derive_output_path_for(tool: Tool, path: &Path) -> Result<(String, String), C
                             dt.minute(),
                             dt.second()
                         );
-                        return Ok((folder, format!("{ts}-opencode.md")));
+                        return Ok((folder, format!("{ts}-opencode")));
                     }
                 }
             }
-            Ok(("unknown".to_string(), format!("{session_id}-opencode.md")))
+            Ok(("unknown".to_string(), format!("{session_id}-opencode")))
         }
-        _ => Ok(discover::derive_output_path(tool, path)),
+        _ => {
+            let (folder, filename) = discover::derive_output_path(tool, path);
+            Ok((folder, filename.trim_end_matches(".md").to_string()))
+        }
+    }
+}
+
+fn output_filename(stem: &str, format: OutputFormat) -> String {
+    match format {
+        OutputFormat::EmojiText => format!("{stem}.md"),
+        OutputFormat::Jsonl => format!("{stem}.jsonl"),
+        OutputFormat::TrainingJson => format!("{stem}.training.json"),
     }
 }
 
@@ -808,9 +871,9 @@ mod tests {
         )
         .unwrap();
 
-        let (folder, filename) = derive_output_path_for(Tool::OpenCode, &message_dir).unwrap();
+        let (folder, filename) = derive_output_stem_for(Tool::OpenCode, &message_dir).unwrap();
         assert_eq!(folder, "2024-01");
-        assert_eq!(filename, "2024-01-01T00-00-00-opencode.md");
+        assert_eq!(filename, "2024-01-01T00-00-00-opencode");
 
         fs::remove_dir_all(dir).ok();
     }
@@ -822,9 +885,9 @@ mod tests {
         let message_dir = dir.join("message").join(session_id);
         fs::create_dir_all(&message_dir).unwrap();
 
-        let (folder, filename) = derive_output_path_for(Tool::OpenCode, &message_dir).unwrap();
+        let (folder, filename) = derive_output_stem_for(Tool::OpenCode, &message_dir).unwrap();
         assert_eq!(folder, "unknown");
-        assert_eq!(filename, "ses_missing-opencode.md");
+        assert_eq!(filename, "ses_missing-opencode");
 
         fs::remove_dir_all(dir).ok();
     }

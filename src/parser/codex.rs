@@ -53,16 +53,25 @@ use serde_json::Value;
 use crate::ast::*;
 use crate::error::CassioError;
 use crate::parser::Parser;
+use crate::training::{
+    ParsedSession, TrainingEvent, TrainingMetadata, TrainingSession, TrainingSource,
+    detect_embedded_content, hash_named_chunks, next_event_id, training_stats_from_session,
+};
 
 /// Parser for OpenAI Codex `rollout-*.jsonl` session logs.
 pub struct CodexParser;
 
 impl Parser for CodexParser {
-    fn parse_session(&self, path: &Path) -> Result<Session, CassioError> {
+    fn parse_export(&self, path: &Path) -> Result<ParsedSession, CassioError> {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
         let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
-        parse_lines(lines.into_iter())
+        parse_lines(
+            lines.into_iter(),
+            path.to_string_lossy().to_string(),
+            path.parent()
+                .map(|parent| parent.to_string_lossy().to_string()),
+        )
     }
 }
 
@@ -72,7 +81,7 @@ impl CodexParser {
     /// WHY: Same rationale as `ClaudeParser::parse_from_lines` — testability
     /// without filesystem access, and stdin reuse.
     pub fn parse_from_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioError> {
-        parse_lines(lines)
+        Ok(parse_lines(lines, "stdin".to_string(), None)?.session)
     }
 }
 
@@ -103,27 +112,39 @@ struct CodexRecord {
 ///
 /// PHASE 3: FINALIZATION
 /// Patch `metadata.model` with the last seen model name, compute duration.
-fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioError> {
+fn parse_lines<I: Iterator<Item = String>>(
+    lines: I,
+    source_path: String,
+    source_root: Option<String>,
+) -> Result<ParsedSession, CassioError> {
     let mut metadata: Option<SessionMetadata> = None;
     let mut messages: Vec<Message> = Vec::new();
     let mut stats = SessionStats::default();
     let mut current_model: Option<String> = None;
+    let mut models_seen: Vec<String> = Vec::new();
     // WHY: Maps call_id → (function_name, args_json_string) so that when the
     // function_call_output arrives, we can reconstruct a readable summary.
     let mut pending_functions: HashMap<String, (String, String)> = HashMap::new();
     let mut first_timestamp: Option<DateTime<Utc>> = None;
     let mut last_timestamp: Option<DateTime<Utc>> = None;
+    let mut training_events: Vec<TrainingEvent> = Vec::new();
+    let mut sequence: u64 = 0;
+    let mut line_count: u64 = 0;
+    let mut hash_chunks: Vec<(String, String)> = Vec::new();
 
-    for line in lines {
+    for (line_index, line) in lines.enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
+        line_count += 1;
+        hash_chunks.push((format!("jsonl:{}", line_index + 1), line.clone()));
 
         let record: CodexRecord = match serde_json::from_str(trimmed) {
             Ok(r) => r,
             Err(_) => continue,
         };
+        let source_ref = format!("jsonl:{}", line_index + 1);
 
         let ts = record.timestamp.parse::<DateTime<Utc>>().ok();
         if let Some(t) = ts {
@@ -212,6 +233,26 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                                             text: text.to_string(),
                                         });
                                         has_text = true;
+                                        sequence += 1;
+                                        training_events.push(TrainingEvent {
+                                            event_id: next_event_id(sequence),
+                                            sequence,
+                                            timestamp: ts,
+                                            role: Some("assistant".to_string()),
+                                            event_kind: "message".to_string(),
+                                            model: current_model.clone(),
+                                            raw_text: Some(text.to_string()),
+                                            sanitized_text: None,
+                                            embedded_content_flags: detect_embedded_content(text),
+                                            tool_name: None,
+                                            tool_call_id: None,
+                                            tool_input_raw: None,
+                                            tool_input_sanitized: None,
+                                            tool_output_raw: None,
+                                            tool_output_sanitized: None,
+                                            usage: None,
+                                            source_record_refs: vec![source_ref.clone()],
+                                        });
                                     }
                                 }
                             }
@@ -251,6 +292,41 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                         if !call_id.is_empty() {
                             pending_functions.insert(call_id, (name, args));
                         }
+                        let tool_name = record
+                            .payload
+                            .get("name")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .to_string();
+                        let args_json = record
+                            .payload
+                            .get("arguments")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("{}");
+                        sequence += 1;
+                        training_events.push(TrainingEvent {
+                            event_id: next_event_id(sequence),
+                            sequence,
+                            timestamp: ts,
+                            role: Some("assistant".to_string()),
+                            event_kind: "tool_call".to_string(),
+                            model: current_model.clone(),
+                            raw_text: None,
+                            sanitized_text: None,
+                            embedded_content_flags: Default::default(),
+                            tool_name: Some(tool_name),
+                            tool_call_id: record
+                                .payload
+                                .get("call_id")
+                                .and_then(|v| v.as_str())
+                                .map(|value| value.to_string()),
+                            tool_input_raw: serde_json::from_str(args_json).ok(),
+                            tool_input_sanitized: None,
+                            tool_output_raw: None,
+                            tool_output_sanitized: None,
+                            usage: None,
+                            source_record_refs: vec![source_ref.clone()],
+                        });
                     }
                     "function_call_output" => {
                         let call_id = record
@@ -320,16 +396,56 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                                 model: current_model.clone(),
                                 content: vec![ContentBlock::ToolResult {
                                     tool_use_id: call_id.to_string(),
-                                    name,
+                                    name: name.clone(),
                                     success: !is_error,
                                     summary,
                                 }],
                                 usage: None,
                             });
+                            sequence += 1;
+                            training_events.push(TrainingEvent {
+                                event_id: next_event_id(sequence),
+                                sequence,
+                                timestamp: ts,
+                                role: Some("assistant".to_string()),
+                                event_kind: "tool_result".to_string(),
+                                model: current_model.clone(),
+                                raw_text: None,
+                                sanitized_text: None,
+                                embedded_content_flags: detect_embedded_content(output),
+                                tool_name: Some(name),
+                                tool_call_id: Some(call_id.to_string()),
+                                tool_input_raw: serde_json::from_str(&args_json).ok(),
+                                tool_input_sanitized: None,
+                                tool_output_raw: Some(Value::String(output.to_string())),
+                                tool_output_sanitized: None,
+                                usage: None,
+                                source_record_refs: vec![source_ref.clone()],
+                            });
                         }
                     }
                     "reasoning" => {
-                        // Skip encrypted reasoning blocks
+                        sequence += 1;
+                        let raw_text = serde_json::to_string(&record.payload).unwrap_or_default();
+                        training_events.push(TrainingEvent {
+                            event_id: next_event_id(sequence),
+                            sequence,
+                            timestamp: ts,
+                            role: Some("assistant".to_string()),
+                            event_kind: "message".to_string(),
+                            model: current_model.clone(),
+                            raw_text: Some(raw_text.clone()),
+                            sanitized_text: None,
+                            embedded_content_flags: detect_embedded_content(&raw_text),
+                            tool_name: None,
+                            tool_call_id: None,
+                            tool_input_raw: None,
+                            tool_input_sanitized: None,
+                            tool_output_raw: None,
+                            tool_output_sanitized: None,
+                            usage: None,
+                            source_record_refs: vec![source_ref.clone()],
+                        });
                     }
                     _ => {}
                 }
@@ -371,6 +487,26 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                 } else if payload_type == "user_message"
                     && let Some(msg) = record.payload.get("message").and_then(|v| v.as_str())
                 {
+                    sequence += 1;
+                    training_events.push(TrainingEvent {
+                        event_id: next_event_id(sequence),
+                        sequence,
+                        timestamp: ts,
+                        role: Some("user".to_string()),
+                        event_kind: "message".to_string(),
+                        model: None,
+                        raw_text: Some(msg.to_string()),
+                        sanitized_text: None,
+                        embedded_content_flags: detect_embedded_content(msg),
+                        tool_name: None,
+                        tool_call_id: None,
+                        tool_input_raw: None,
+                        tool_input_sanitized: None,
+                        tool_output_raw: None,
+                        tool_output_sanitized: None,
+                        usage: None,
+                        source_record_refs: vec![source_ref.clone()],
+                    });
                     // Clean up message - remove context blocks and file refs
                     let mut text = msg.to_string();
                     // Remove <context ref="...">...</context>
@@ -416,6 +552,9 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                     && current_model.as_deref() != Some(m)
                 {
                     current_model = Some(m.to_string());
+                    if !models_seen.iter().any(|seen| seen == m) {
+                        models_seen.push(m.to_string());
+                    }
                     messages.push(Message {
                         role: Role::System,
                         timestamp: ts,
@@ -424,6 +563,26 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                             model: m.to_string(),
                         }],
                         usage: None,
+                    });
+                    sequence += 1;
+                    training_events.push(TrainingEvent {
+                        event_id: next_event_id(sequence),
+                        sequence,
+                        timestamp: ts,
+                        role: Some("system".to_string()),
+                        event_kind: "model_change".to_string(),
+                        model: Some(m.to_string()),
+                        raw_text: None,
+                        sanitized_text: None,
+                        embedded_content_flags: Default::default(),
+                        tool_name: None,
+                        tool_call_id: None,
+                        tool_input_raw: None,
+                        tool_input_sanitized: None,
+                        tool_output_raw: None,
+                        tool_output_sanitized: None,
+                        usage: None,
+                        source_record_refs: vec![source_ref.clone()],
                     });
                 }
             }
@@ -443,11 +602,42 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
         }
     }
 
-    Ok(Session {
+    let session = Session {
         metadata: meta,
         messages,
         stats,
-    })
+    };
+    let training_metadata = TrainingMetadata {
+        project_path_raw: session.metadata.project_path.clone(),
+        project_path_sanitized: session.metadata.project_path.clone(),
+        started_at: session.metadata.started_at,
+        ended_at: last_timestamp,
+        git_branch: session.metadata.git_branch.clone(),
+        title: session.metadata.title.clone(),
+        session_kind: session.metadata.session_kind.to_string(),
+        models_seen,
+        version: session.metadata.version.clone(),
+    };
+    let source = TrainingSource {
+        tool: session.metadata.tool.to_string(),
+        source_path,
+        session_id: session.metadata.session_id.clone(),
+        source_hash: hash_named_chunks(hash_chunks),
+        source_record_count: Some(line_count),
+        source_format: Some("jsonl".to_string()),
+        source_root,
+    };
+    let mut training = TrainingSession::new(
+        "codex.v1",
+        source,
+        training_metadata,
+        training_stats_from_session(&session.stats),
+    );
+    for event in training_events {
+        training.push_event(event);
+    }
+
+    Ok(ParsedSession { session, training })
 }
 
 /// Convert a Codex function name and JSON arguments string into a compact summary.

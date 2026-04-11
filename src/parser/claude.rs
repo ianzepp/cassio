@@ -48,16 +48,25 @@ use serde_json::Value;
 use crate::ast::*;
 use crate::error::CassioError;
 use crate::parser::Parser;
+use crate::training::{
+    EventUsage, ParsedSession, TrainingEvent, TrainingMetadata, TrainingSession, TrainingSource,
+    detect_embedded_content, hash_named_chunks, next_event_id, training_stats_from_session,
+};
 
 /// Parser for Claude Code JSONL session logs.
 pub struct ClaudeParser;
 
 impl Parser for ClaudeParser {
-    fn parse_session(&self, path: &Path) -> Result<Session, CassioError> {
+    fn parse_export(&self, path: &Path) -> Result<ParsedSession, CassioError> {
         let file = std::fs::File::open(path)?;
         let reader = std::io::BufReader::new(file);
         let lines: Vec<String> = reader.lines().collect::<Result<_, _>>()?;
-        parse_lines(lines.into_iter())
+        parse_lines(
+            lines.into_iter(),
+            path.to_string_lossy().to_string(),
+            path.parent()
+                .map(|parent| parent.to_string_lossy().to_string()),
+        )
     }
 }
 
@@ -68,7 +77,7 @@ impl ClaudeParser {
     /// testable without touching the filesystem, and lets stdin mode reuse the
     /// same logic after reading all lines into a `Vec<String>`.
     pub fn parse_from_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioError> {
-        parse_lines(lines)
+        Ok(parse_lines(lines, "stdin".to_string(), None)?.session)
     }
 }
 
@@ -116,24 +125,35 @@ struct SessionRecord {
 /// PHASE 4: FINALIZATION
 /// Patch `metadata.model`, compute duration from the timestamp range, and assemble
 /// the `Session` struct.
-fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioError> {
+fn parse_lines<I: Iterator<Item = String>>(
+    lines: I,
+    source_path: String,
+    source_root: Option<String>,
+) -> Result<ParsedSession, CassioError> {
     let mut metadata: Option<SessionMetadata> = None;
     let mut messages: Vec<Message> = Vec::new();
     let mut stats = SessionStats::default();
     let mut current_model: Option<String> = None;
+    let mut models_seen: Vec<String> = Vec::new();
     // WHY: pending_tools maps tool_use_id → (name, input) so that when the
     // corresponding tool_result arrives in the next user turn, we can attach the
     // tool name and generate a human-readable summary.
     let mut pending_tools: HashMap<String, (String, Value)> = HashMap::new();
     let mut last_timestamp: Option<DateTime<Utc>> = None;
     let mut first_timestamp: Option<DateTime<Utc>> = None;
+    let mut training_events: Vec<TrainingEvent> = Vec::new();
+    let mut sequence: u64 = 0;
+    let mut line_count: u64 = 0;
+    let mut hash_chunks: Vec<(String, String)> = Vec::new();
 
     // PHASE 1 + 2 + 3: LINE PROCESSING, METADATA INITIALIZATION, RECORD DISPATCH
-    for line in lines {
+    for (line_index, line) in lines.enumerate() {
         let trimmed = line.trim();
         if trimmed.is_empty() {
             continue;
         }
+        line_count += 1;
+        hash_chunks.push((format!("jsonl:{}", line_index + 1), line.clone()));
 
         let record: SessionRecord = match serde_json::from_str(trimmed) {
             Ok(r) => r,
@@ -142,6 +162,7 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
         };
 
         let ts = parse_timestamp(&record.timestamp);
+        let source_ref = format!("jsonl:{}", line_index + 1);
         if let Some(t) = ts {
             if first_timestamp.is_none() {
                 first_timestamp = Some(t);
@@ -165,12 +186,37 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
 
         match record.record_type.as_str() {
             "user" => {
-                // WHY: isMeta records are system context injections (prompts, file
-                // contents) that Claude Code logs as user turns. They are not human
-                // input and should not appear in transcripts.
                 if record.is_meta.unwrap_or(false) {
+                    sequence += 1;
+                    let raw = serde_json::to_string(&record.message).unwrap_or_default();
+                    training_events.push(TrainingEvent {
+                        event_id: next_event_id(sequence),
+                        sequence,
+                        timestamp: ts,
+                        role: Some("system".to_string()),
+                        event_kind: "meta_record".to_string(),
+                        model: None,
+                        raw_text: Some(raw.clone()),
+                        sanitized_text: None,
+                        embedded_content_flags: detect_embedded_content(&raw),
+                        tool_name: None,
+                        tool_call_id: None,
+                        tool_input_raw: None,
+                        tool_input_sanitized: None,
+                        tool_output_raw: None,
+                        tool_output_sanitized: None,
+                        usage: None,
+                        source_record_refs: vec![source_ref.clone()],
+                    });
                     continue;
                 }
+                append_claude_user_training_events(
+                    &record.message,
+                    ts,
+                    &source_ref,
+                    &mut training_events,
+                    &mut sequence,
+                );
                 parse_user_record(
                     &record.message,
                     ts,
@@ -180,6 +226,14 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                 );
             }
             "assistant" => {
+                append_claude_assistant_training_events(
+                    &record.message,
+                    ts,
+                    &source_ref,
+                    &mut training_events,
+                    &mut sequence,
+                    &mut models_seen,
+                );
                 parse_assistant_record(
                     &record.message,
                     ts,
@@ -188,6 +242,11 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                     &mut current_model,
                     &mut pending_tools,
                 );
+                if let Some(model) = record.message.get("model").and_then(|value| value.as_str())
+                    && model != "<synthetic>"
+                {
+                    current_model = Some(model.to_string());
+                }
             }
             "queue-operation" => {
                 // WHY: queue-operation records carry a top-level `content` field that
@@ -202,6 +261,26 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
                             model: None,
                             content: vec![ContentBlock::QueueOperation { summary }],
                             usage: None,
+                        });
+                        sequence += 1;
+                        training_events.push(TrainingEvent {
+                            event_id: next_event_id(sequence),
+                            sequence,
+                            timestamp: ts,
+                            role: Some("system".to_string()),
+                            event_kind: "queue_operation".to_string(),
+                            model: None,
+                            raw_text: Some(content.to_string()),
+                            sanitized_text: None,
+                            embedded_content_flags: detect_embedded_content(content),
+                            tool_name: None,
+                            tool_call_id: None,
+                            tool_input_raw: None,
+                            tool_input_sanitized: None,
+                            tool_output_raw: None,
+                            tool_output_sanitized: None,
+                            usage: None,
+                            source_record_refs: vec![source_ref.clone()],
                         });
                     }
                 }
@@ -223,11 +302,286 @@ fn parse_lines<I: Iterator<Item = String>>(lines: I) -> Result<Session, CassioEr
         }
     }
 
-    Ok(Session {
+    let session = Session {
         metadata: meta,
         messages,
         stats,
-    })
+    };
+    let training_metadata = TrainingMetadata {
+        project_path_raw: session.metadata.project_path.clone(),
+        project_path_sanitized: session.metadata.project_path.clone(),
+        started_at: session.metadata.started_at,
+        ended_at: last_timestamp,
+        git_branch: session.metadata.git_branch.clone(),
+        title: session.metadata.title.clone(),
+        session_kind: session.metadata.session_kind.to_string(),
+        models_seen,
+        version: session.metadata.version.clone(),
+    };
+    let source = TrainingSource {
+        tool: session.metadata.tool.to_string(),
+        source_path,
+        session_id: session.metadata.session_id.clone(),
+        source_hash: hash_named_chunks(hash_chunks),
+        source_record_count: Some(line_count),
+        source_format: Some("jsonl".to_string()),
+        source_root,
+    };
+    let mut training = TrainingSession::new(
+        "claude.v1",
+        source,
+        training_metadata,
+        training_stats_from_session(&session.stats),
+    );
+    for event in training_events {
+        training.push_event(event);
+    }
+
+    Ok(ParsedSession { session, training })
+}
+
+fn append_claude_user_training_events(
+    message: &Value,
+    ts: Option<DateTime<Utc>>,
+    source_ref: &str,
+    training_events: &mut Vec<TrainingEvent>,
+    sequence: &mut u64,
+) {
+    if message.get("role").and_then(|r| r.as_str()) != Some("user") {
+        return;
+    }
+
+    match message.get("content") {
+        Some(Value::String(text)) => {
+            *sequence += 1;
+            training_events.push(TrainingEvent {
+                event_id: next_event_id(*sequence),
+                sequence: *sequence,
+                timestamp: ts,
+                role: Some("user".to_string()),
+                event_kind: "message".to_string(),
+                model: None,
+                raw_text: Some(text.to_string()),
+                sanitized_text: None,
+                embedded_content_flags: detect_embedded_content(text),
+                tool_name: None,
+                tool_call_id: None,
+                tool_input_raw: None,
+                tool_input_sanitized: None,
+                tool_output_raw: None,
+                tool_output_sanitized: None,
+                usage: None,
+                source_record_refs: vec![source_ref.to_string()],
+            });
+        }
+        Some(Value::Array(items)) => {
+            for block in items {
+                let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+                match block_type {
+                    "text" => {
+                        let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                        *sequence += 1;
+                        training_events.push(TrainingEvent {
+                            event_id: next_event_id(*sequence),
+                            sequence: *sequence,
+                            timestamp: ts,
+                            role: Some("user".to_string()),
+                            event_kind: "message".to_string(),
+                            model: None,
+                            raw_text: Some(text.to_string()),
+                            sanitized_text: None,
+                            embedded_content_flags: detect_embedded_content(text),
+                            tool_name: None,
+                            tool_call_id: None,
+                            tool_input_raw: None,
+                            tool_input_sanitized: None,
+                            tool_output_raw: None,
+                            tool_output_sanitized: None,
+                            usage: None,
+                            source_record_refs: vec![source_ref.to_string()],
+                        });
+                    }
+                    "tool_result" => {
+                        *sequence += 1;
+                        let serialized = serde_json::to_value(block).ok();
+                        let text = serde_json::to_string(block).unwrap_or_default();
+                        training_events.push(TrainingEvent {
+                            event_id: next_event_id(*sequence),
+                            sequence: *sequence,
+                            timestamp: ts,
+                            role: Some("user".to_string()),
+                            event_kind: "tool_result".to_string(),
+                            model: None,
+                            raw_text: None,
+                            sanitized_text: None,
+                            embedded_content_flags: detect_embedded_content(&text),
+                            tool_name: None,
+                            tool_call_id: block
+                                .get("tool_use_id")
+                                .and_then(|v| v.as_str())
+                                .map(|value| value.to_string()),
+                            tool_input_raw: None,
+                            tool_input_sanitized: None,
+                            tool_output_raw: serialized,
+                            tool_output_sanitized: None,
+                            usage: None,
+                            source_record_refs: vec![source_ref.to_string()],
+                        });
+                    }
+                    _ => {}
+                }
+            }
+        }
+        _ => {}
+    }
+}
+
+fn append_claude_assistant_training_events(
+    message: &Value,
+    ts: Option<DateTime<Utc>>,
+    source_ref: &str,
+    training_events: &mut Vec<TrainingEvent>,
+    sequence: &mut u64,
+    models_seen: &mut Vec<String>,
+) {
+    if message.get("role").and_then(|r| r.as_str()) != Some("assistant") {
+        return;
+    }
+
+    let model = message
+        .get("model")
+        .and_then(|value| value.as_str())
+        .filter(|value| *value != "<synthetic>");
+    if let Some(model) = model
+        && !models_seen.iter().any(|seen| seen == model)
+    {
+        models_seen.push(model.to_string());
+    }
+
+    if let Some(model) = model {
+        *sequence += 1;
+        training_events.push(TrainingEvent {
+            event_id: next_event_id(*sequence),
+            sequence: *sequence,
+            timestamp: ts,
+            role: Some("system".to_string()),
+            event_kind: "model_change".to_string(),
+            model: Some(model.to_string()),
+            raw_text: None,
+            sanitized_text: None,
+            embedded_content_flags: Default::default(),
+            tool_name: None,
+            tool_call_id: None,
+            tool_input_raw: None,
+            tool_input_sanitized: None,
+            tool_output_raw: None,
+            tool_output_sanitized: None,
+            usage: None,
+            source_record_refs: vec![source_ref.to_string()],
+        });
+    }
+
+    let usage = message.get("usage").map(|usage| EventUsage {
+        input_tokens: usage
+            .get("input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        output_tokens: usage
+            .get("output_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        cache_read_tokens: usage
+            .get("cache_read_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+        cache_creation_tokens: usage
+            .get("cache_creation_input_tokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
+    });
+
+    if let Some(items) = message.get("content").and_then(|value| value.as_array()) {
+        for block in items {
+            let block_type = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+            match block_type {
+                "text" => {
+                    let text = block.get("text").and_then(|t| t.as_str()).unwrap_or("");
+                    *sequence += 1;
+                    training_events.push(TrainingEvent {
+                        event_id: next_event_id(*sequence),
+                        sequence: *sequence,
+                        timestamp: ts,
+                        role: Some("assistant".to_string()),
+                        event_kind: "message".to_string(),
+                        model: model.map(|value| value.to_string()),
+                        raw_text: Some(text.to_string()),
+                        sanitized_text: None,
+                        embedded_content_flags: detect_embedded_content(text),
+                        tool_name: None,
+                        tool_call_id: None,
+                        tool_input_raw: None,
+                        tool_input_sanitized: None,
+                        tool_output_raw: None,
+                        tool_output_sanitized: None,
+                        usage: usage.clone(),
+                        source_record_refs: vec![source_ref.to_string()],
+                    });
+                }
+                "thinking" => {
+                    let text = block.get("thinking").and_then(|t| t.as_str()).unwrap_or("");
+                    *sequence += 1;
+                    training_events.push(TrainingEvent {
+                        event_id: next_event_id(*sequence),
+                        sequence: *sequence,
+                        timestamp: ts,
+                        role: Some("assistant".to_string()),
+                        event_kind: "message".to_string(),
+                        model: model.map(|value| value.to_string()),
+                        raw_text: Some(text.to_string()),
+                        sanitized_text: None,
+                        embedded_content_flags: detect_embedded_content(text),
+                        tool_name: None,
+                        tool_call_id: None,
+                        tool_input_raw: None,
+                        tool_input_sanitized: None,
+                        tool_output_raw: None,
+                        tool_output_sanitized: None,
+                        usage: None,
+                        source_record_refs: vec![source_ref.to_string()],
+                    });
+                }
+                "tool_use" => {
+                    *sequence += 1;
+                    training_events.push(TrainingEvent {
+                        event_id: next_event_id(*sequence),
+                        sequence: *sequence,
+                        timestamp: ts,
+                        role: Some("assistant".to_string()),
+                        event_kind: "tool_call".to_string(),
+                        model: model.map(|value| value.to_string()),
+                        raw_text: None,
+                        sanitized_text: None,
+                        embedded_content_flags: Default::default(),
+                        tool_name: block
+                            .get("name")
+                            .and_then(|value| value.as_str())
+                            .map(|value| value.to_string()),
+                        tool_call_id: block
+                            .get("id")
+                            .and_then(|value| value.as_str())
+                            .map(|value| value.to_string()),
+                        tool_input_raw: block.get("input").cloned(),
+                        tool_input_sanitized: None,
+                        tool_output_raw: None,
+                        tool_output_sanitized: None,
+                        usage: None,
+                        source_record_refs: vec![source_ref.to_string()],
+                    });
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 /// Process a `user`-type record from the JSONL log.

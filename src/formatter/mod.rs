@@ -1,19 +1,21 @@
 pub mod emoji_text;
 pub mod jsonl;
+pub mod training_json;
 
 use std::io::Write;
 
-use crate::ast::Session;
 use crate::error::CassioError;
+use crate::training::ParsedSession;
 
 pub trait Formatter {
-    fn format(&self, session: &Session, writer: &mut dyn Write) -> Result<(), CassioError>;
+    fn format(&self, parsed: &ParsedSession, writer: &mut dyn Write) -> Result<(), CassioError>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     EmojiText,
     Jsonl,
+    TrainingJson,
 }
 
 impl OutputFormat {
@@ -21,6 +23,7 @@ impl OutputFormat {
         match self {
             OutputFormat::EmojiText => Box::new(emoji_text::EmojiTextFormatter),
             OutputFormat::Jsonl => Box::new(jsonl::JsonlFormatter),
+            OutputFormat::TrainingJson => Box::new(training_json::TrainingJsonFormatter),
         }
     }
 }
@@ -32,7 +35,10 @@ impl std::str::FromStr for OutputFormat {
         match s {
             "emoji-text" | "text" => Ok(OutputFormat::EmojiText),
             "jsonl" | "json" => Ok(OutputFormat::Jsonl),
-            _ => Err(format!("Unknown format: {s}. Valid: emoji-text, jsonl")),
+            "training-json" | "training" => Ok(OutputFormat::TrainingJson),
+            _ => Err(format!(
+                "Unknown format: {s}. Valid: emoji-text, jsonl, training-json"
+            )),
         }
     }
 }
@@ -42,6 +48,7 @@ impl std::fmt::Display for OutputFormat {
         match self {
             OutputFormat::EmojiText => write!(f, "emoji-text"),
             OutputFormat::Jsonl => write!(f, "jsonl"),
+            OutputFormat::TrainingJson => write!(f, "training-json"),
         }
     }
 }
@@ -82,6 +89,14 @@ mod tests {
     #[test]
     fn test_from_str_invalid() {
         assert!("xml".parse::<OutputFormat>().is_err());
+    }
+
+    #[test]
+    fn test_from_str_training_json() {
+        assert_eq!(
+            "training-json".parse::<OutputFormat>().unwrap(),
+            OutputFormat::TrainingJson
+        );
     }
 
     #[test]

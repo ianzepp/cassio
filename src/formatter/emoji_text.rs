@@ -37,6 +37,7 @@ use std::io::Write;
 use crate::ast::*;
 use crate::error::CassioError;
 use crate::formatter::Formatter;
+use crate::training::ParsedSession;
 
 const EMOJI_META: &str = "\u{1f4cb}"; // 📋
 const EMOJI_USER: &str = "\u{1f464}"; // 👤
@@ -56,7 +57,8 @@ impl Formatter for EmojiTextFormatter {
     /// 2. Blank line
     /// 3. All messages in chronological order
     /// 4. Summary block (only when the session has at least one message)
-    fn format(&self, session: &Session, writer: &mut dyn Write) -> Result<(), CassioError> {
+    fn format(&self, parsed: &ParsedSession, writer: &mut dyn Write) -> Result<(), CassioError> {
+        let session = &parsed.session;
         format_metadata(&session.metadata, writer)?;
         writeln!(writer)?;
 
@@ -315,8 +317,42 @@ fn format_tokens(n: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::training::{
+        ParsedSession, TrainingMetadata, TrainingSession, TrainingSource,
+        training_stats_from_session,
+    };
     use chrono::Utc;
     use std::collections::HashSet;
+
+    fn parsed_from_session(session: Session) -> ParsedSession {
+        ParsedSession {
+            training: TrainingSession::new(
+                "test.v1",
+                TrainingSource {
+                    tool: session.metadata.tool.to_string(),
+                    source_path: "/tmp/source".to_string(),
+                    session_id: session.metadata.session_id.clone(),
+                    source_hash: "sha256:test".to_string(),
+                    source_record_count: Some(1),
+                    source_format: Some("jsonl".to_string()),
+                    source_root: None,
+                },
+                TrainingMetadata {
+                    project_path_raw: session.metadata.project_path.clone(),
+                    project_path_sanitized: session.metadata.project_path.clone(),
+                    started_at: session.metadata.started_at,
+                    ended_at: None,
+                    git_branch: session.metadata.git_branch.clone(),
+                    title: session.metadata.title.clone(),
+                    session_kind: session.metadata.session_kind.to_string(),
+                    models_seen: session.metadata.model.clone().into_iter().collect(),
+                    version: session.metadata.version.clone(),
+                },
+                training_stats_from_session(&session.stats),
+            ),
+            session,
+        }
+    }
 
     #[test]
     fn test_shorten_model_name_opus() {
@@ -441,7 +477,7 @@ mod tests {
 
     #[test]
     fn test_full_format_output() {
-        let session = make_test_session();
+        let session = parsed_from_session(make_test_session());
         let mut buf = Vec::new();
         EmojiTextFormatter.format(&session, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -463,7 +499,7 @@ mod tests {
 
     #[test]
     fn test_format_tool_result_success() {
-        let session = Session {
+        let session = parsed_from_session(Session {
             metadata: SessionMetadata {
                 session_id: "s1".to_string(),
                 tool: Tool::Claude,
@@ -492,7 +528,7 @@ mod tests {
                 assistant_messages: 1,
                 ..Default::default()
             },
-        };
+        });
         let mut buf = Vec::new();
         EmojiTextFormatter.format(&session, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -501,7 +537,7 @@ mod tests {
 
     #[test]
     fn test_format_tool_result_failure() {
-        let session = Session {
+        let session = parsed_from_session(Session {
             metadata: SessionMetadata {
                 session_id: "s1".to_string(),
                 tool: Tool::Claude,
@@ -530,7 +566,7 @@ mod tests {
                 assistant_messages: 1,
                 ..Default::default()
             },
-        };
+        });
         let mut buf = Vec::new();
         EmojiTextFormatter.format(&session, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();
@@ -539,7 +575,7 @@ mod tests {
 
     #[test]
     fn test_format_empty_stats_no_summary() {
-        let session = Session {
+        let session = parsed_from_session(Session {
             metadata: SessionMetadata {
                 session_id: "s1".to_string(),
                 tool: Tool::Claude,
@@ -553,7 +589,7 @@ mod tests {
             },
             messages: vec![],
             stats: SessionStats::default(),
-        };
+        });
         let mut buf = Vec::new();
         EmojiTextFormatter.format(&session, &mut buf).unwrap();
         let output = String::from_utf8(buf).unwrap();

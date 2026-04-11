@@ -57,6 +57,11 @@ use serde_json::Value;
 use crate::ast::*;
 use crate::error::CassioError;
 use crate::parser::Parser;
+use crate::training::{
+    ParsedSession, TrainingEvent, TrainingMetadata, TrainingSession, TrainingSource,
+    detect_embedded_content, event_usage_from_tokens, hash_named_chunks, next_event_id,
+    training_stats_from_session,
+};
 
 /// Parser for OpenCode's fragmented JSON session storage.
 pub struct OpenCodeParser;
@@ -67,7 +72,7 @@ impl Parser for OpenCodeParser {
     /// Accepts either:
     /// - A `message/ses_*` path (the canonical form produced by discovery), or
     /// - A storage root directory (enumerates sessions and parses the first one found)
-    fn parse_session(&self, path: &Path) -> Result<Session, CassioError> {
+    fn parse_export(&self, path: &Path) -> Result<ParsedSession, CassioError> {
         let path_str = path.to_string_lossy();
 
         if path_str.contains("/message/ses_") {
@@ -81,7 +86,7 @@ impl Parser for OpenCodeParser {
                 .parent()
                 .and_then(|p| p.parent())
                 .ok_or_else(|| CassioError::Other("Cannot determine storage directory".into()))?;
-            return parse_session(storage_dir, &session_id);
+            return parse_session(storage_dir, &session_id, path.to_string_lossy().to_string());
         }
 
         // If it's a storage directory, enumerate sessions
@@ -93,7 +98,11 @@ impl Parser for OpenCodeParser {
                 let entry = entry?;
                 let name = entry.file_name().to_string_lossy().to_string();
                 if name.starts_with("ses_") {
-                    return parse_session(path, &name);
+                    return parse_session(
+                        path,
+                        &name,
+                        path.join("message").join(&name).display().to_string(),
+                    );
                 }
             }
         }
@@ -216,7 +225,11 @@ struct OCPartMeta {
 /// PHASE 4: AST CONSTRUCTION
 /// Iterate sorted messages, emitting `ModelChange`, `User`, and `Assistant`
 /// message nodes. Tool stats and token totals are accumulated here.
-fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, CassioError> {
+fn parse_session(
+    storage_dir: &Path,
+    session_id: &str,
+    source_path: String,
+) -> Result<ParsedSession, CassioError> {
     // PHASE 1: SESSION METADATA
     let session_data = find_session_file(storage_dir, session_id)?;
 
@@ -230,7 +243,7 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
     });
 
     // PHASE 3: PART LOADING
-    let mut parts_map: HashMap<String, Vec<OCPart>> = HashMap::new();
+    let mut parts_map: HashMap<String, Vec<LoadedPart>> = HashMap::new();
     for msg in &oc_messages {
         let parts_dir = storage_dir.join("part").join(&msg.id);
         if parts_dir.is_dir() {
@@ -252,22 +265,47 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
     let mut metadata = SessionMetadata {
         session_id: session_data.id.clone(),
         tool: Tool::OpenCode,
-        project_path: session_data.directory.unwrap_or_default(),
+        project_path: session_data.directory.clone().unwrap_or_default(),
         started_at,
         session_kind: SessionKind::Uncertain,
         version: None,
         git_branch: None,
         model: None,
-        title: session_data.title,
+        title: session_data.title.clone(),
     };
 
     let mut stats = SessionStats::default();
     let mut messages: Vec<Message> = Vec::new();
     let mut current_model: Option<String> = None;
+    let mut models_seen: Vec<String> = Vec::new();
     let mut total_cost: f64 = 0.0;
     let mut last_timestamp: Option<DateTime<Utc>> = None;
+    let mut training_events: Vec<TrainingEvent> = Vec::new();
+    let mut sequence: u64 = 0;
+    let mut hash_chunks: Vec<(String, String)> = Vec::new();
+    hash_chunks.push((
+        format!("session:{session_id}"),
+        serde_json::to_string(&serde_json::json!({
+            "id": session_data.id,
+            "directory": session_data.directory,
+            "title": session_data.title,
+            "time": session_data.time.as_ref().map(|t| serde_json::json!({"created": t.created, "updated": t.updated})),
+        }))
+        .unwrap_or_default(),
+    ));
 
     for oc_msg in &oc_messages {
+        hash_chunks.push((
+            format!("message:{}", oc_msg.id),
+            serde_json::to_string(&serde_json::json!({
+                "id": oc_msg.id,
+                "role": oc_msg.role,
+                "time": oc_msg.time.as_ref().map(|t| serde_json::json!({"created": t.created, "completed": t.completed})),
+                "modelID": oc_msg.model_id,
+                "cost": oc_msg.cost,
+            }))
+            .unwrap_or_default(),
+        ));
         let msg_ts = oc_msg
             .time
             .as_ref()
@@ -297,6 +335,9 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
             && current_model.as_ref() != Some(model)
         {
             current_model = Some(model.clone());
+            if !models_seen.iter().any(|seen| seen == model) {
+                models_seen.push(model.clone());
+            }
             messages.push(Message {
                 role: Role::System,
                 timestamp: msg_ts,
@@ -305,6 +346,26 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
                     model: model.clone(),
                 }],
                 usage: None,
+            });
+            sequence += 1;
+            training_events.push(TrainingEvent {
+                event_id: next_event_id(sequence),
+                sequence,
+                timestamp: msg_ts,
+                role: Some("system".to_string()),
+                event_kind: "model_change".to_string(),
+                model: Some(model.clone()),
+                raw_text: None,
+                sanitized_text: None,
+                embedded_content_flags: Default::default(),
+                tool_name: None,
+                tool_call_id: None,
+                tool_input_raw: None,
+                tool_input_sanitized: None,
+                tool_output_raw: None,
+                tool_output_sanitized: None,
+                usage: None,
+                source_record_refs: vec![format!("message:{}", oc_msg.id)],
             });
         }
 
@@ -315,13 +376,72 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
             let mut blocks = Vec::new();
             let mut has_text = false;
 
-            for part in &msg_parts {
+            for loaded in &msg_parts {
+                hash_chunks.push((
+                    format!("part:{}", loaded.id),
+                    serde_json::to_string(&serde_json::json!({
+                        "type": loaded.part.part_type,
+                        "text": loaded.part.text,
+                        "synthetic": loaded.part.synthetic,
+                        "tool": loaded.part.tool,
+                    }))
+                    .unwrap_or_default(),
+                ));
+                let part = &loaded.part;
                 let pt = part.part_type.as_deref().unwrap_or("");
                 if pt == "text" {
                     if part.synthetic.unwrap_or(false) {
+                        if let Some(text) = &part.text {
+                            sequence += 1;
+                            training_events.push(TrainingEvent {
+                                event_id: next_event_id(sequence),
+                                sequence,
+                                timestamp: msg_ts,
+                                role: Some("system".to_string()),
+                                event_kind: "system_context".to_string(),
+                                model: None,
+                                raw_text: Some(text.clone()),
+                                sanitized_text: None,
+                                embedded_content_flags: detect_embedded_content(text),
+                                tool_name: None,
+                                tool_call_id: None,
+                                tool_input_raw: None,
+                                tool_input_sanitized: None,
+                                tool_output_raw: None,
+                                tool_output_sanitized: None,
+                                usage: None,
+                                source_record_refs: vec![
+                                    format!("message:{}", oc_msg.id),
+                                    format!("part:{}", loaded.id),
+                                ],
+                            });
+                        }
                         continue;
                     }
                     if let Some(text) = &part.text {
+                        sequence += 1;
+                        training_events.push(TrainingEvent {
+                            event_id: next_event_id(sequence),
+                            sequence,
+                            timestamp: msg_ts,
+                            role: Some("user".to_string()),
+                            event_kind: "message".to_string(),
+                            model: None,
+                            raw_text: Some(text.clone()),
+                            sanitized_text: None,
+                            embedded_content_flags: detect_embedded_content(text),
+                            tool_name: None,
+                            tool_call_id: None,
+                            tool_input_raw: None,
+                            tool_input_sanitized: None,
+                            tool_output_raw: None,
+                            tool_output_sanitized: None,
+                            usage: None,
+                            source_record_refs: vec![
+                                format!("message:{}", oc_msg.id),
+                                format!("part:{}", loaded.id),
+                            ],
+                        });
                         if text.starts_with("<file>") || text.starts_with("Called the") {
                             continue;
                         }
@@ -352,11 +472,60 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
             let mut blocks = Vec::new();
             let mut has_text = false;
 
-            for part in &msg_parts {
+            for loaded in &msg_parts {
+                hash_chunks.push((
+                    format!("part:{}", loaded.id),
+                    serde_json::to_string(&serde_json::json!({
+                        "type": loaded.part.part_type,
+                        "text": loaded.part.text,
+                        "synthetic": loaded.part.synthetic,
+                        "tool": loaded.part.tool,
+                    }))
+                    .unwrap_or_default(),
+                ));
+                let part = &loaded.part;
                 let pt = part.part_type.as_deref().unwrap_or("");
                 match pt {
                     "text" => {
                         if let Some(text) = &part.text {
+                            sequence += 1;
+                            training_events.push(TrainingEvent {
+                                event_id: next_event_id(sequence),
+                                sequence,
+                                timestamp: msg_ts,
+                                role: Some("assistant".to_string()),
+                                event_kind: "message".to_string(),
+                                model: current_model.clone(),
+                                raw_text: Some(text.clone()),
+                                sanitized_text: None,
+                                embedded_content_flags: detect_embedded_content(text),
+                                tool_name: None,
+                                tool_call_id: None,
+                                tool_input_raw: None,
+                                tool_input_sanitized: None,
+                                tool_output_raw: None,
+                                tool_output_sanitized: None,
+                                usage: oc_msg.tokens.as_ref().map(|t| {
+                                    event_usage_from_tokens(&TokenUsage {
+                                        input_tokens: t.input.unwrap_or(0),
+                                        output_tokens: t.output.unwrap_or(0),
+                                        cache_read_tokens: t
+                                            .cache
+                                            .as_ref()
+                                            .and_then(|c| c.read)
+                                            .unwrap_or(0),
+                                        cache_creation_tokens: t
+                                            .cache
+                                            .as_ref()
+                                            .and_then(|c| c.write)
+                                            .unwrap_or(0),
+                                    })
+                                }),
+                                source_record_refs: vec![
+                                    format!("message:{}", oc_msg.id),
+                                    format!("part:{}", loaded.id),
+                                ],
+                            });
                             let trimmed = text.trim();
                             if !trimmed.is_empty() {
                                 blocks.push(ContentBlock::Text {
@@ -416,6 +585,39 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
                                 success: !is_error,
                                 summary: truncated,
                             });
+                            sequence += 1;
+                            let raw_output = serde_json::to_value(&serde_json::json!({
+                                "status": state.status,
+                                "title": state.title,
+                                "metadata": state.metadata.as_ref().map(|meta| serde_json::json!({
+                                    "exit": meta.exit,
+                                    "description": meta.description,
+                                })),
+                            }))
+                            .ok();
+                            let flag_text = serde_json::to_string(&raw_output).unwrap_or_default();
+                            training_events.push(TrainingEvent {
+                                event_id: next_event_id(sequence),
+                                sequence,
+                                timestamp: msg_ts,
+                                role: Some("assistant".to_string()),
+                                event_kind: "tool_result".to_string(),
+                                model: current_model.clone(),
+                                raw_text: None,
+                                sanitized_text: None,
+                                embedded_content_flags: detect_embedded_content(&flag_text),
+                                tool_name: Some(tool_name.to_string()),
+                                tool_call_id: Some(loaded.id.clone()),
+                                tool_input_raw: state.input.clone(),
+                                tool_input_sanitized: None,
+                                tool_output_raw: raw_output,
+                                tool_output_sanitized: None,
+                                usage: None,
+                                source_record_refs: vec![
+                                    format!("message:{}", oc_msg.id),
+                                    format!("part:{}", loaded.id),
+                                ],
+                            });
                         }
                     }
                     _ => {}
@@ -459,11 +661,48 @@ fn parse_session(storage_dir: &Path, session_id: &str) -> Result<Session, Cassio
         }
     }
 
-    Ok(Session {
+    let session = Session {
         metadata,
         messages,
         stats,
-    })
+    };
+    let source = TrainingSource {
+        tool: session.metadata.tool.to_string(),
+        source_path,
+        session_id: session.metadata.session_id.clone(),
+        source_hash: hash_named_chunks(hash_chunks),
+        source_record_count: Some(
+            1 + oc_messages.len() as u64
+                + training_events
+                    .iter()
+                    .filter(|e| e.source_record_refs.iter().any(|r| r.starts_with("part:")))
+                    .count() as u64,
+        ),
+        source_format: Some("opencode.fragmented-json".to_string()),
+        source_root: Some(storage_dir.to_string_lossy().to_string()),
+    };
+    let metadata = TrainingMetadata {
+        project_path_raw: session.metadata.project_path.clone(),
+        project_path_sanitized: session.metadata.project_path.clone(),
+        started_at: session.metadata.started_at,
+        ended_at: last_timestamp,
+        git_branch: session.metadata.git_branch.clone(),
+        title: session.metadata.title.clone(),
+        session_kind: session.metadata.session_kind.to_string(),
+        models_seen,
+        version: session.metadata.version.clone(),
+    };
+    let mut training = TrainingSession::new(
+        "opencode.v1",
+        source,
+        metadata,
+        training_stats_from_session(&session.stats),
+    );
+    for event in training_events {
+        training.push_event(event);
+    }
+
+    Ok(ParsedSession { session, training })
 }
 
 /// Search the `session/<project_id>/` tree for a session metadata file.
@@ -530,7 +769,7 @@ fn load_messages(dir: &Path) -> Result<Vec<OCMessage>, CassioError> {
 /// Load all content part JSON files for a single message.
 ///
 /// Parts that fail to deserialize are silently skipped.
-fn load_parts(dir: &Path) -> Result<Vec<OCPart>, CassioError> {
+fn load_parts(dir: &Path) -> Result<Vec<LoadedPart>, CassioError> {
     let mut parts = Vec::new();
     if !dir.is_dir() {
         return Ok(parts);
@@ -541,12 +780,25 @@ fn load_parts(dir: &Path) -> Result<Vec<OCPart>, CassioError> {
         if path.extension().is_some_and(|e| e == "json") {
             let content = std::fs::read_to_string(&path)?;
             match serde_json::from_str::<OCPart>(&content) {
-                Ok(part) => parts.push(part),
+                Ok(part) => parts.push(LoadedPart {
+                    id: path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                    part,
+                }),
                 Err(_) => continue,
             }
         }
     }
+    parts.sort_by(|a, b| a.id.cmp(&b.id));
     Ok(parts)
+}
+
+struct LoadedPart {
+    id: String,
+    part: OCPart,
 }
 
 /// Convert an OpenCode Unix millisecond timestamp to `DateTime<Utc>`.

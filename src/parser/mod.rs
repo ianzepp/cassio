@@ -33,8 +33,8 @@ pub mod opencode;
 
 use std::path::Path;
 
-use crate::ast::Session;
 use crate::error::CassioError;
+use crate::training::ParsedSession;
 
 /// Trait implemented by each tool-specific parser.
 ///
@@ -43,11 +43,16 @@ use crate::error::CassioError;
 /// parser they have. Adding a new tool only requires adding a new module and
 /// returning it from `detect_parser`.
 pub trait Parser {
+    /// Parse a session log into both the transcript AST and the training export IR.
+    fn parse_export(&self, path: &Path) -> Result<ParsedSession, CassioError>;
+
     /// Parse a session log at `path` into the normalized `Session` AST.
     ///
     /// Each parser is responsible for reading the file, normalizing the tool-specific
     /// schema, and computing session statistics in a single pass.
-    fn parse_session(&self, path: &Path) -> Result<Session, CassioError>;
+    fn parse_session(&self, path: &Path) -> Result<crate::ast::Session, CassioError> {
+        Ok(self.parse_export(path)?.session)
+    }
 }
 
 /// Select the appropriate parser for a given file path using path hints and content inspection.

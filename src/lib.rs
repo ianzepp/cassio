@@ -9,3 +9,4 @@ pub mod parser;
 pub mod pricing;
 pub mod redact;
 pub mod summary;
+pub mod training;

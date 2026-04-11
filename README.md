@@ -79,6 +79,14 @@ Structured JSONL for programmatic consumption. Metadata on the first line, one m
 {"user_messages":1,"assistant_messages":1,"tool_calls":0,"tool_errors":0,"duration_seconds":7}
 ```
 
+### training-json
+
+Canonical machine-readable session export for downstream dataset work. In batch mode, `emoji-text` now writes a sibling `*.training.json` file beside each transcript. You can also emit it directly:
+
+```sh
+cassio --format training-json session.jsonl
+```
+
 ## Supported tools
 
 Cassio reads the native log format of each tool and normalizes everything into the same AST before formatting.
@@ -117,9 +125,12 @@ Output is organized into `YYYY-MM/` subdirectories:
 ~/transcripts/
   2025-11/
     2025-11-12T21-52-16-claude.md
+    2025-11-12T21-52-16-claude.training.json
     2025-11-11T14-12-49-codex.md
+    2025-11-11T14-12-49-codex.training.json
   2025-12/
     2025-12-01T09-30-00-opencode.md
+    2025-12-01T09-30-00-opencode.training.json
 ```
 
 ### Process everything at once
@@ -142,6 +153,7 @@ Add to your crontab for automatic transcript generation:
 
 ```sh
 cassio --format jsonl session.jsonl     # JSONL output instead of text
+cassio --format training-json session.jsonl
 cassio --all -o ~/transcripts --force   # regenerate even if output is newer
 ```
 
@@ -169,6 +181,7 @@ Manage individual values:
 ```sh
 cassio set output "~/transcripts"   # default output directory
 cassio set format jsonl             # default output format
+cassio set format training-json
 cassio set git.commit true          # auto-commit after processing
 cassio set git.push true            # auto-push after committing
 
@@ -201,7 +214,7 @@ CLI flags always override config values. With the config above, `cassio --all` j
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `output` | string | *(none)* | Default output directory |
-| `format` | string | `emoji-text` | Default output format (`emoji-text` or `jsonl`) |
+| `format` | string | `emoji-text` | Default output format (`emoji-text`, `jsonl`, or `training-json`) |
 | `provider` | string | `ollama` | LLM provider for compaction (`ollama`, `claude`, or `codex`) |
 | `model` | string | `llama3.1` | Default model name (passed to the selected provider) |
 | `git.commit` | bool | `false` | Auto-commit output files after processing |
@@ -366,7 +379,7 @@ Arguments:
 
 Options:
   -o, --output <DIR>     Output directory for batch mode
-  -f, --format <FORMAT>  Output format: emoji-text, jsonl [default: emoji-text]
+  -f, --format <FORMAT>  Output format: emoji-text, jsonl, training-json [default: emoji-text]
       --all              Discover and process all tools' default paths
       --force            Regenerate even if output is newer than input
   -h, --help             Print help

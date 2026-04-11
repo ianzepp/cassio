@@ -72,7 +72,7 @@ pub struct SourcesConfig {
 pub struct Config {
     /// Default output directory for transcripts and compaction files.
     pub output: Option<String>,
-    /// Default output format: `"emoji-text"` or `"jsonl"`.
+    /// Default output format: `"emoji-text"`, `"jsonl"`, or `"training-json"`.
     pub format: Option<String>,
     /// Default model name passed to the LLM provider during compaction.
     pub model: Option<String>,
@@ -235,7 +235,7 @@ pub fn init() -> Result<(), CassioError> {
 # Default output directory for transcripts, dailies, and monthlies
 # output = "~/transcripts"
 
-# Default output format: "emoji-text" or "jsonl"
+# Default output format: "emoji-text", "jsonl", or "training-json"
 # format = "emoji-text"
 
 # LLM provider for compaction: "ollama", "claude", "codex", or "openrouter"
