@@ -126,7 +126,7 @@ enum CompactAction {
         /// Model name passed to the selected provider
         #[arg(short, long)]
         model: Option<String>,
-        /// LLM provider: ollama, claude, or codex
+        /// LLM provider: ollama, claude, codex, or openrouter
         #[arg(short, long)]
         provider: Option<String>,
     },
@@ -141,7 +141,7 @@ enum CompactAction {
         /// Model name passed to the selected provider
         #[arg(short, long)]
         model: Option<String>,
-        /// LLM provider: ollama, claude, or codex
+        /// LLM provider: ollama, claude, codex, or openrouter
         #[arg(short, long)]
         provider: Option<String>,
     },
@@ -153,7 +153,7 @@ enum CompactAction {
         /// Model name passed to the selected provider
         #[arg(short, long)]
         model: Option<String>,
-        /// LLM provider: ollama, claude, or codex
+        /// LLM provider: ollama, claude, codex, or openrouter
         #[arg(short, long)]
         provider: Option<String>,
     },
@@ -237,6 +237,10 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                             )
                         })?;
 
+                    if !cli.dry_run {
+                        cassio::git::sync_before_writing(&output_dir, &config.git)?;
+                    }
+
                     // Step 1: sessions → transcripts
                     eprintln!("=== Step 1: Processing sessions ===\n");
                     let format: OutputFormat = cli
@@ -314,6 +318,9 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         .clone()
                         .or(config_output)
                         .unwrap_or_else(|| input_dir.clone());
+                    if !cli.dry_run {
+                        cassio::git::sync_before_writing(&output_dir, &config.git)?;
+                    }
                     cassio::compact::run_dailies(
                         &input_dir,
                         &output_dir,
@@ -348,6 +355,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                                     .into(),
                             )
                         })?;
+                    cassio::git::sync_before_writing(&dir, &config.git)?;
                     cassio::compact::run_monthly(&dir, &input, &model, &provider)?;
                     cassio::git::auto_commit_and_push(
                         &dir,
@@ -505,6 +513,10 @@ fn run_batch_mode(
     let total = files.len();
     eprintln!("Found {total} session files");
 
+    if !cli.dry_run {
+        cassio::git::sync_before_writing(output_dir, &config.git)?;
+    }
+
     process_file_list(
         &files,
         output_dir,
@@ -555,6 +567,10 @@ fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result
         source_names.join(", ")
     );
 
+    if !cli.dry_run {
+        cassio::git::sync_before_writing(output_dir, &config.git)?;
+    }
+
     for (tool, path) in &sources {
         eprintln!("\nProcessing {} ({})...", tool, path.display());
 
@@ -591,7 +607,7 @@ fn run_all_mode(cli: &Cli, config: &Config, formatter: &dyn Formatter) -> Result
 /// unless `force` is true.
 ///
 /// PHASE 2: OUTPUT PATH DERIVATION
-/// Compute the `YYYY-MM/filename.txt` path within `output_dir` using
+/// Compute the `YYYY-MM/filename.md` path within `output_dir` using
 /// `derive_output_path_for`. Create parent directories as needed.
 ///
 /// PHASE 3: PARSING AND WRITING
@@ -727,11 +743,11 @@ fn derive_output_path_for(tool: Tool, path: &Path) -> Result<(String, String), C
                             dt.minute(),
                             dt.second()
                         );
-                        return Ok((folder, format!("{ts}-opencode.txt")));
+                        return Ok((folder, format!("{ts}-opencode.md")));
                     }
                 }
             }
-            Ok(("unknown".to_string(), format!("{session_id}-opencode.txt")))
+            Ok(("unknown".to_string(), format!("{session_id}-opencode.md")))
         }
         _ => Ok(discover::derive_output_path(tool, path)),
     }
@@ -794,7 +810,7 @@ mod tests {
 
         let (folder, filename) = derive_output_path_for(Tool::OpenCode, &message_dir).unwrap();
         assert_eq!(folder, "2024-01");
-        assert_eq!(filename, "2024-01-01T00-00-00-opencode.txt");
+        assert_eq!(filename, "2024-01-01T00-00-00-opencode.md");
 
         fs::remove_dir_all(dir).ok();
     }
@@ -808,7 +824,7 @@ mod tests {
 
         let (folder, filename) = derive_output_path_for(Tool::OpenCode, &message_dir).unwrap();
         assert_eq!(folder, "unknown");
-        assert_eq!(filename, "ses_missing-opencode.txt");
+        assert_eq!(filename, "ses_missing-opencode.md");
 
         fs::remove_dir_all(dir).ok();
     }

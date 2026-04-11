@@ -9,8 +9,9 @@ INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 OS="$(uname -s)"
 case "$OS" in
     Darwin) OS="apple-darwin" ;;
+    Linux)  OS="unknown-linux-gnu" ;;
     *)
-        echo "Error: unsupported OS: $OS (cassio currently supports macOS only)"
+        echo "Error: unsupported OS: $OS"
         exit 1
         ;;
 esac

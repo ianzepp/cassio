@@ -4,6 +4,34 @@ use std::process::Command;
 use crate::config::GitConfig;
 use crate::error::CassioError;
 
+pub fn sync_before_writing(dir: &Path, git: &GitConfig) -> Result<(), CassioError> {
+    if !git.commit || !is_git_repo(dir) {
+        return Ok(());
+    }
+
+    if !worktree_is_clean(dir)? {
+        eprintln!("git: skipping pull --ff-only because worktree is not clean");
+        return Ok(());
+    }
+
+    let pull = Command::new("git")
+        .args(["pull", "--ff-only"])
+        .current_dir(dir)
+        .output()
+        .map_err(|e| CassioError::Other(format!("git pull failed: {e}")))?;
+
+    if pull.status.success() {
+        eprintln!("git: synced");
+    } else {
+        let stderr = String::from_utf8_lossy(&pull.stderr);
+        if !stderr.trim().is_empty() {
+            eprintln!("git pull --ff-only failed: {stderr}");
+        }
+    }
+
+    Ok(())
+}
+
 /// If git.commit is enabled, stage all changes in `dir` and commit.
 /// If git.push is also enabled, push after committing.
 /// Silently skips if `dir` is not a git repo.
@@ -12,17 +40,8 @@ pub fn auto_commit_and_push(dir: &Path, message: &str, git: &GitConfig) -> Resul
         return Ok(());
     }
 
-    // Check if dir is inside a git repo
-    let status = Command::new("git")
-        .args(["rev-parse", "--is-inside-work-tree"])
-        .current_dir(dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status();
-
-    match status {
-        Ok(s) if s.success() => {}
-        _ => return Ok(()), // not a git repo, skip silently
+    if !is_git_repo(dir) {
+        return Ok(());
     }
 
     // Stage all changes
@@ -82,4 +101,29 @@ pub fn auto_commit_and_push(dir: &Path, message: &str, git: &GitConfig) -> Resul
     }
 
     Ok(())
+}
+
+fn is_git_repo(dir: &Path) -> bool {
+    let status = Command::new("git")
+        .args(["rev-parse", "--is-inside-work-tree"])
+        .current_dir(dir)
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+
+    matches!(status, Ok(s) if s.success())
+}
+
+fn worktree_is_clean(dir: &Path) -> Result<bool, CassioError> {
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output()
+        .map_err(|e| CassioError::Other(format!("git status failed: {e}")))?;
+
+    if !status.status.success() {
+        return Ok(false);
+    }
+
+    Ok(status.stdout.is_empty())
 }

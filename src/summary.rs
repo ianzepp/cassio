@@ -6,7 +6,7 @@ use walkdir::WalkDir;
 use crate::error::CassioError;
 use crate::pricing;
 
-/// Stats parsed from a single transcript .txt file.
+/// Stats parsed from a single session transcript file.
 #[derive(Default)]
 struct TranscriptStats {
     tool_name: String,
@@ -112,25 +112,42 @@ fn collect_stats(dir: &Path) -> Result<Vec<TranscriptStats>, CassioError> {
             Some(n) => n,
             None => continue,
         };
-        // Match YYYY-MM-DDT...-tool.txt pattern
-        if !name.ends_with(".txt") || name.len() < 15 {
+        let Some((date, tool_name)) = parse_session_filename(name) else {
             continue;
-        }
-        let date = &name[..10];
-        if date.as_bytes().get(4) != Some(&b'-') || date.as_bytes().get(7) != Some(&b'-') {
-            continue;
-        }
-        // Tool name: last segment before .txt after the last hyphen
-        let stem = &name[..name.len() - 4]; // strip .txt
-        let tool_name = stem.rsplit('-').next().unwrap_or("unknown").to_string();
+        };
 
-        match parse_transcript_stats(path, date, &tool_name) {
+        match parse_transcript_stats(path, &date, &tool_name) {
             Ok(s) => results.push(s),
             Err(_) => continue,
         }
     }
 
     Ok(results)
+}
+
+fn parse_session_filename(name: &str) -> Option<(String, String)> {
+    let stem = if let Some(stem) = name.strip_suffix(".md") {
+        stem
+    } else if let Some(stem) = name.strip_suffix(".txt") {
+        stem
+    } else {
+        return None;
+    };
+
+    if stem.len() < 15 {
+        return None;
+    }
+
+    let date = stem.get(..10)?;
+    if date.as_bytes().get(4) != Some(&b'-') || date.as_bytes().get(7) != Some(&b'-') {
+        return None;
+    }
+
+    let tool_name = stem.rsplit('-').next()?;
+    match tool_name {
+        "claude" | "codex" | "opencode" => Some((date.to_string(), tool_name.to_string())),
+        _ => None,
+    }
 }
 
 fn parse_transcript_stats(

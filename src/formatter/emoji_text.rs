@@ -18,7 +18,7 @@
 //! # Design philosophy
 //!
 //! The output is optimized for `grep`. Each line is self-contained — the leading
-//! emoji is always the first character, making patterns like `grep "❌" file.txt`
+//! emoji is always the first character, making patterns like `grep "❌" file.md`
 //! instant to write and read.
 //!
 //! The formatter is intentionally lossy in some areas:

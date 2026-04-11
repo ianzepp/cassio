@@ -3,17 +3,17 @@
 //! # Architecture overview
 //!
 //! Compaction is the second stage of the cassio pipeline, operating on the
-//! formatted `.txt` transcripts produced by the session stage:
+//! formatted session transcripts produced by the session stage:
 //!
 //! ```text
-//! Sessions (.txt) → extract_session → LLM prompt → .compaction.md
+//! Sessions (.md) → extract_session → LLM prompt → .daily.md
 //! Daily compactions → build_monthly_input → LLM prompt → .monthly.md
 //! ```
 //!
 //! # Daily compaction
 //!
 //! `run_dailies` groups session transcript files by their date prefix (YYYY-MM-DD),
-//! skips days that already have a `.compaction.md`, and sends the remaining days
+//! skips days that already have a `.daily.md`, and sends the remaining days
 //! to the LLM one at a time.
 //!
 //! The `extract_session` function reduces each transcript to a compact signal:
@@ -23,20 +23,22 @@
 //!
 //! # Monthly compaction
 //!
-//! `run_monthly` aggregates all `.compaction.md` files for a month. When the
+//! `run_monthly` aggregates all `.daily.md` files for a month. When the
 //! combined size fits within the 150KB input budget, a single LLM call suffices.
 //! When it doesn't, a chunked multi-pass approach is used: each chunk is summarized
 //! separately, then a merge pass synthesizes the chunk summaries into a final monthly.
 //!
 //! # LLM provider abstraction
 //!
-//! Three providers are supported, all invoked as external CLI processes:
+//! Four providers are supported:
 //! - **ollama** — `ollama run <model>` (stdin/stdout)
 //! - **claude** — `claude -p --model <model>` (stdin/stdout)
 //! - **codex** — `codex exec -m <model> -o <tmpfile>` (stdin + output file)
+//! - **openrouter** — direct HTTPS call using `OPENROUTER_API_KEY`
 //!
-//! WHY external CLIs rather than API calls: cassio avoids API key management.
-//! Users who have the tool installed already have credentials configured for its CLI.
+//! WHY mostly external CLIs rather than API calls: cassio avoids bespoke auth flows
+//! where possible. `openrouter` is the exception because it provides a stable
+//! generic chat-completions endpoint across many hosted models.
 //!
 //! # TRADE-OFFS
 //!
@@ -77,8 +79,8 @@ enum DailyCompactionPlan {
 
 /// Run daily compaction over all pending days in `input_dir`.
 ///
-/// A "pending day" is any date that has at least one `YYYY-MM-DD*.txt` session
-/// transcript in `input_dir` but no corresponding `.compaction.md` in `output_dir`.
+/// A "pending day" is any date that has at least one `YYYY-MM-DD*` session
+/// transcript in `input_dir` but no corresponding `.daily.md` in `output_dir`.
 ///
 /// Progress is reported to stderr as `dailies: [N of M] YYYY-MM/YYYY-MM-DD... ok`.
 /// Days that fail (empty LLM output or LLM error) are counted and reported at the end
@@ -136,9 +138,9 @@ pub fn run_dailies(
     Ok(())
 }
 
-/// Compact all daily compaction files for a single month into a `.monthly.md` summary.
+/// Compact all daily summary files for a single month into a `.monthly.md` summary.
 ///
-/// Reads every `.compaction.md` from `<dir>/<month>/`, and either:
+/// Reads every `.daily.md` from `<dir>/<month>/`, and either:
 /// - Sends all content in a single LLM call (when total size ≤ `MAX_INPUT_BYTES`)
 /// - Chunks the content, summarizes each chunk, then merges the chunk summaries
 ///
@@ -176,31 +178,31 @@ pub fn run_monthly(
         return Ok(());
     }
 
-    // Collect compaction files sorted by date
-    let mut compactions: Vec<PathBuf> = Vec::new();
+    // Collect daily summary files sorted by date
+    let mut daily_files: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&month_dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let name = entry.file_name().to_string_lossy().to_string();
-            if name.ends_with(".compaction.md") {
-                compactions.push(entry.path());
+            if is_daily_summary_name(&name) {
+                daily_files.push(entry.path());
             }
         }
     }
-    compactions.sort();
+    daily_files.sort();
 
-    if compactions.is_empty() {
+    if daily_files.is_empty() {
         return Err(CassioError::Other(format!(
-            "No .compaction.md files found in {month}/"
+            "No .daily.md files found in {month}/"
         )));
     }
 
-    eprintln!("monthly: {month} ({} compaction files)", compactions.len());
+    eprintln!("monthly: {month} ({} daily files)", daily_files.len());
 
     let start = Instant::now();
 
     // Read all compaction contents
     let mut contents: Vec<(String, String)> = Vec::new(); // (filename, content)
-    for path in &compactions {
+    for path in &daily_files {
         let name = path.file_name().unwrap().to_string_lossy().to_string();
         let content = std::fs::read_to_string(path)?;
         contents.push((name, content));
@@ -232,7 +234,7 @@ pub fn run_monthly(
         for (i, chunk) in chunks.iter().enumerate() {
             let days: Vec<&str> = chunk
                 .iter()
-                .map(|(n, _)| n.strip_suffix(".compaction.md").unwrap_or(n.as_str()))
+                .map(|(n, _)| strip_daily_suffix(n).unwrap_or(n.as_str()))
                 .collect();
             eprint!(
                 "  chunk [{} of {}] {} to {}...",
@@ -280,9 +282,9 @@ pub fn run_monthly(
     Ok(())
 }
 
-/// Discover and compact all months that have daily compactions but no monthly summary.
+/// Discover and compact all months that have daily summaries but no monthly summary.
 ///
-/// Scans `dir` for `YYYY-MM/` subdirectories that contain `.compaction.md` files
+/// Scans `dir` for `YYYY-MM/` subdirectories that contain `.daily.md` files
 /// but no `.monthly.md`, then calls `run_monthly` for each in chronological order.
 pub fn run_pending_monthlies(dir: &Path, model: &str, provider: &str) -> Result<(), CassioError> {
     let pending = find_pending_months(dir)?;
@@ -311,10 +313,10 @@ pub fn run_pending_monthlies(dir: &Path, model: &str, provider: &str) -> Result<
 // LLM invocation, and output assembly. They are private because all coordination
 // is managed by the public run_* functions above.
 
-/// Return all `YYYY-MM` months under `dir` that have compaction files but no monthly.
+/// Return all `YYYY-MM` months under `dir` that have daily summaries but no monthly.
 ///
-/// WHY: Checking for `.compaction.md` presence before adding a month to the pending
-/// list means empty month directories (e.g., months with sessions but no compactions
+/// WHY: Checking for `.daily.md` presence before adding a month to the pending
+/// list means empty month directories (e.g., months with sessions but no daily summaries
 /// yet) are skipped without producing an error.
 fn find_pending_months(dir: &Path) -> Result<Vec<String>, CassioError> {
     let mut months = Vec::new();
@@ -331,16 +333,16 @@ fn find_pending_months(dir: &Path) -> Result<Vec<String>, CassioError> {
             if monthly_path.exists() {
                 continue;
             }
-            // Check if there are any compaction files
-            let has_compactions = std::fs::read_dir(&month_dir)
+            // Check if there are any daily summary files
+            let has_dailies = std::fs::read_dir(&month_dir)
                 .ok()
                 .map(|entries| {
                     entries
                         .filter_map(|e| e.ok())
-                        .any(|e| e.file_name().to_string_lossy().ends_with(".compaction.md"))
+                        .any(|e| is_daily_summary_name(&e.file_name().to_string_lossy()))
                 })
                 .unwrap_or(false);
-            if has_compactions {
+            if has_dailies {
                 months.push(name);
             }
         }
@@ -350,7 +352,7 @@ fn find_pending_months(dir: &Path) -> Result<Vec<String>, CassioError> {
     Ok(months)
 }
 
-/// Group session `.txt` files by date and return those without a `.compaction.md`.
+/// Group session transcript files by date and return those without a `.daily.md`.
 ///
 /// WHY: Using `BTreeMap` ensures days are returned in chronological order without
 /// a separate sort. The date prefix is extracted from the filename (first 10 chars
@@ -371,7 +373,7 @@ fn find_pending_days(
             None => continue,
         };
 
-        if name.ends_with(".txt") && name.len() >= 10 && name.is_char_boundary(10) {
+        if is_session_transcript_name(name) && name.len() >= 10 && name.is_char_boundary(10) {
             let date = &name[..10];
             if date.len() == 10 && date.as_bytes()[4] == b'-' && date.as_bytes()[7] == b'-' {
                 by_date
@@ -384,9 +386,7 @@ fn find_pending_days(
 
     let mut pending = Vec::new();
     for (date, mut files) in by_date {
-        let month = date.get(..7).unwrap_or("unknown");
-        let compaction_path = output_dir.join(month).join(format!("{date}.compaction.md"));
-        if compaction_path.exists() {
+        if daily_summary_exists(output_dir, &date) {
             continue;
         }
         files.sort();
@@ -448,7 +448,7 @@ fn compact_day(
 
     let out_dir = output_dir.join(month);
     std::fs::create_dir_all(&out_dir)?;
-    let out_path = out_dir.join(format!("{day}.compaction.md"));
+    let out_path = out_dir.join(format!("{day}.daily.md"));
     std::fs::write(&out_path, &output)?;
 
     Ok(true)
@@ -503,6 +503,40 @@ fn build_daily_merge_input(day: &str, chunks: &[(String, String)], merge_day: &s
 
     input.push_str(&format!("---END DAILY PARTIALS ({merge_day})---\n"));
     input
+}
+
+fn is_session_transcript_name(name: &str) -> bool {
+    let stem = if let Some(stem) = name.strip_suffix(".md") {
+        stem
+    } else if let Some(stem) = name.strip_suffix(".txt") {
+        stem
+    } else {
+        return false;
+    };
+
+    let tool = stem.rsplit('-').next().unwrap_or("");
+    matches!(tool, "claude" | "codex" | "opencode")
+}
+
+fn is_daily_summary_name(name: &str) -> bool {
+    name.ends_with(".daily.md") || name.ends_with(".compaction.md")
+}
+
+fn strip_daily_suffix(name: &str) -> Option<&str> {
+    name.strip_suffix(".daily.md")
+        .or_else(|| name.strip_suffix(".compaction.md"))
+}
+
+fn daily_summary_exists(output_dir: &Path, date: &str) -> bool {
+    let month = date.get(..7).unwrap_or("unknown");
+    output_dir
+        .join(month)
+        .join(format!("{date}.daily.md"))
+        .exists()
+        || output_dir
+            .join(month)
+            .join(format!("{date}.compaction.md"))
+            .exists()
 }
 
 /// Reduce a session transcript to the content most useful for LLM compaction.
@@ -805,8 +839,8 @@ mod tests {
     #[test]
     fn test_build_daily_input_structure() {
         let sessions = vec![
-            ("s1.txt".to_string(), "session one".to_string()),
-            ("s2.txt".to_string(), "session two".to_string()),
+            ("s1.md".to_string(), "session one".to_string()),
+            ("s2.md".to_string(), "session two".to_string()),
         ];
         let result = build_daily_input("PROMPT", "2025-01-15", &sessions);
         assert!(result.starts_with("PROMPT"));
@@ -820,7 +854,7 @@ mod tests {
 
     #[test]
     fn test_plan_daily_compaction_single() {
-        let sessions = vec![("a.txt".to_string(), "small content".to_string())];
+        let sessions = vec![("a.md".to_string(), "small content".to_string())];
         let plan = plan_daily_compaction("2025-01-15", &sessions);
         match plan {
             DailyCompactionPlan::Single(input) => {
@@ -834,10 +868,7 @@ mod tests {
     #[test]
     fn test_plan_daily_compaction_chunked() {
         let big = "x".repeat(100_000);
-        let sessions = vec![
-            ("a.txt".to_string(), big.clone()),
-            ("b.txt".to_string(), big),
-        ];
+        let sessions = vec![("a.md".to_string(), big.clone()), ("b.md".to_string(), big)];
         let plan = plan_daily_compaction("2025-01-15", &sessions);
         match plan {
             DailyCompactionPlan::Chunked(chunk_inputs, day) => {
@@ -900,7 +931,7 @@ seventh line that should be cut
         // Write to temp file and test extract_session
         let dir = std::env::temp_dir().join("cassio_test_extract");
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("test.txt");
+        let path = dir.join("test.md");
         std::fs::write(&path, content).unwrap();
 
         let result = extract_session(&path).unwrap();

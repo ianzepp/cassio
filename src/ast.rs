@@ -7,7 +7,7 @@
 //! formatting. This module defines that representation — the AST layer.
 //!
 //! ```text
-//! Input (JSONL/JSON) → Parser → Session (AST) → Formatter → Output (.txt / .jsonl)
+//! Input (JSONL/JSON) → Parser → Session (AST) → Formatter → Output (.md / .jsonl)
 //! ```
 //!
 //! # Design philosophy

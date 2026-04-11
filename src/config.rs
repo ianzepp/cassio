@@ -76,7 +76,7 @@ pub struct Config {
     pub format: Option<String>,
     /// Default model name passed to the LLM provider during compaction.
     pub model: Option<String>,
-    /// LLM provider for compaction: `"ollama"`, `"claude"`, or `"codex"`.
+    /// LLM provider for compaction: `"ollama"`, `"claude"`, `"codex"`, or `"openrouter"`.
     pub provider: Option<String>,
     #[serde(default)]
     pub git: GitConfig,
@@ -238,7 +238,7 @@ pub fn init() -> Result<(), CassioError> {
 # Default output format: "emoji-text" or "jsonl"
 # format = "emoji-text"
 
-# LLM provider for compaction: "ollama", "claude", or "codex"
+# LLM provider for compaction: "ollama", "claude", "codex", or "openrouter"
 # provider = "ollama"
 
 # Default model name (passed to the selected provider)

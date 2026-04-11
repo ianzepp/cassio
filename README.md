@@ -3,9 +3,9 @@
 Every conversation you have with an AI coding assistant is buried in opaque JSONL logs scattered across your filesystem. Cassio turns them into plain text you can actually read, search, and keep forever.
 
 ```
-grep "authentication" ~/transcripts/**/*.txt
-grep -l "refactor" ~/transcripts/2025-06/*.txt
-grep "❌" ~/transcripts/2025-07/*.txt   # find all failures
+grep "authentication" ~/transcripts/**/*.md
+grep -l "refactor" ~/transcripts/2025-06/*.md
+grep "❌" ~/transcripts/2025-07/*.md   # find all failures
 ```
 
 Your AI conversations are a form of long-term memory: decisions made, bugs debugged, architectures explored, dead ends abandoned. Cassio makes that memory greppable. Run it nightly, commit the output to a repo, and you have a searchable history of every session across every tool you use.
@@ -116,10 +116,10 @@ Output is organized into `YYYY-MM/` subdirectories:
 ```
 ~/transcripts/
   2025-11/
-    2025-11-12T21-52-16-claude.txt
-    2025-11-11T14-12-49-codex.txt
+    2025-11-12T21-52-16-claude.md
+    2025-11-11T14-12-49-codex.md
   2025-12/
-    2025-12-01T09-30-00-opencode.txt
+    2025-12-01T09-30-00-opencode.md
 ```
 
 ### Process everything at once
@@ -267,7 +267,7 @@ dailies: [3 of 23] 2025-12/2025-12-10... [FAIL]
 finished: 2m25s, 2 compacted, 1 failed
 ```
 
-Output files are written as `YYYY-MM/YYYY-MM-DD.compaction.md` in the output directory. Days that already have a `.compaction.md` are skipped automatically.
+Output files are written as `YYYY-MM/YYYY-MM-DD.daily.md` in the output directory. Days that already have a `.daily.md` are skipped automatically.
 
 The compaction prompt extracts:
 - **Session clusters** grouped by topic, with verbatim user quotes
@@ -320,8 +320,8 @@ cassio compact all --model llama3.1
 
 This runs three steps in sequence:
 
-1. **Sessions**: discovers all tool sources (Claude, Codex, OpenCode) and converts new JSONL logs to `.txt` transcripts
-2. **Dailies**: compacts pending days into `.compaction.md` summaries
+1. **Sessions**: discovers all tool sources (Claude, Codex, OpenCode) and converts new JSONL logs to `.md` transcripts
+2. **Dailies**: compacts pending days into `.daily.md` summaries
 3. **Monthlies**: synthesizes months that have compactions but no `.monthly.md` yet
 
 Each step skips work that's already done, so it's safe to run repeatedly (e.g. via cron).
@@ -393,7 +393,7 @@ Options:
   -i, --input <DIR>    Input directory containing session transcripts
   -l, --limit <N>      Maximum number of days to process
   -m, --model <MODEL>     Model name passed to the selected provider
-  -p, --provider <NAME>  LLM provider: ollama, claude, or codex
+  -p, --provider <NAME>  LLM provider: ollama, claude, codex, or openrouter
   -o, --output <DIR>      Output directory for compaction files
 ```
 
@@ -407,11 +407,11 @@ cassio compact monthly [OPTIONS] --input <YYYY-MM>
 Options:
   -i, --input <YYYY-MM>  Month to process (e.g. 2025-12)
   -m, --model <MODEL>     Model name passed to the selected provider
-  -p, --provider <NAME>  LLM provider: ollama, claude, or codex
+  -p, --provider <NAME>  LLM provider: ollama, claude, codex, or openrouter
   -o, --output <DIR>      Directory containing month subdirectories
 ```
 
-Reads `.compaction.md` files from `<output>/<YYYY-MM>/`, writes `<YYYY-MM>.monthly.md` in the same directory. Automatically chunks large months across multiple LLM calls (150KB input budget per call, ~37.5K tokens at 4 bytes/token).
+Reads `.daily.md` files from `<output>/<YYYY-MM>/`, writes `<YYYY-MM>.monthly.md` in the same directory. Automatically chunks large months across multiple LLM calls (150KB input budget per call, ~37.5K tokens at 4 bytes/token).
 
 ### cassio compact all
 
@@ -420,7 +420,7 @@ cassio compact all [OPTIONS]
 
 Options:
   -m, --model <MODEL>     Model name passed to the selected provider
-  -p, --provider <NAME>  LLM provider: ollama, claude, or codex
+  -p, --provider <NAME>  LLM provider: ollama, claude, codex, or openrouter
   -o, --output <DIR>      Directory for transcripts, dailies, and monthlies
 ```
 

@@ -209,7 +209,7 @@ pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
         Tool::Codex => derive_codex_output_path(path),
         Tool::OpenCode => {
             // For OpenCode we need the session data; use a placeholder
-            ("unknown".to_string(), format!("unknown-{tool}.txt"))
+            ("unknown".to_string(), format!("unknown-{tool}.md"))
         }
     }
 }
@@ -218,7 +218,7 @@ pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
 ///
 /// WHY: Claude session filenames are opaque UUIDs with no date component. The
 /// timestamp must be extracted from the first JSON record in the file. The resulting
-/// path uses `YYYY-MM/YYYY-MM-DDTHH-MM-SS-claude.txt` format so transcripts sort
+/// path uses `YYYY-MM/YYYY-MM-DDTHH-MM-SS-claude.md` format so transcripts sort
 /// chronologically within the output directory.
 fn derive_claude_output_path(path: &Path) -> (String, String) {
     // Read first line to get timestamp
@@ -232,9 +232,9 @@ fn derive_claude_output_path(path: &Path) -> (String, String) {
         } else {
             ts.replace(':', "-").trim_end_matches('Z').to_string()
         };
-        return (folder, format!("{safe_ts}-claude.txt"));
+        return (folder, format!("{safe_ts}-claude.md"));
     }
-    ("unknown".to_string(), "unknown-claude.txt".to_string())
+    ("unknown".to_string(), "unknown-claude.md".to_string())
 }
 
 /// Derive the output path for a Codex rollout file from its filename.
@@ -252,10 +252,10 @@ fn derive_codex_output_path(path: &Path) -> (String, String) {
         if rest.len() >= 19 {
             let ts_part = &rest[..19]; // 2025-11-11T14-12-49
             let folder = &ts_part[..7]; // 2025-11
-            return (folder.to_string(), format!("{ts_part}-codex.txt"));
+            return (folder.to_string(), format!("{ts_part}-codex.md"));
         }
     }
-    ("unknown".to_string(), "unknown-codex.txt".to_string())
+    ("unknown".to_string(), "unknown-codex.md".to_string())
 }
 
 fn read_first_line(path: &Path) -> Result<String, std::io::Error> {
@@ -292,7 +292,7 @@ mod tests {
         let path = PathBuf::from("/sessions/rollout-2025-11-11T14-12-49-019a7455-abcd.jsonl");
         let (folder, filename) = derive_codex_output_path(&path);
         assert_eq!(folder, "2025-11");
-        assert_eq!(filename, "2025-11-11T14-12-49-codex.txt");
+        assert_eq!(filename, "2025-11-11T14-12-49-codex.md");
     }
 
     #[test]
@@ -300,7 +300,7 @@ mod tests {
         let path = PathBuf::from("/sessions/rollout-short.jsonl");
         let (folder, filename) = derive_codex_output_path(&path);
         assert_eq!(folder, "unknown");
-        assert_eq!(filename, "unknown-codex.txt");
+        assert_eq!(filename, "unknown-codex.md");
     }
 
     #[test]
@@ -308,7 +308,7 @@ mod tests {
         let path = PathBuf::from("/sessions/something.jsonl");
         let (folder, filename) = derive_codex_output_path(&path);
         assert_eq!(folder, "unknown");
-        assert_eq!(filename, "unknown-codex.txt");
+        assert_eq!(filename, "unknown-codex.md");
     }
 
     #[test]
@@ -332,7 +332,7 @@ mod tests {
 
         let (folder, filename) = derive_claude_output_path(&path);
         assert_eq!(folder, "2025-11");
-        assert_eq!(filename, "2025-11-12T21-52-16-claude.txt");
+        assert_eq!(filename, "2025-11-12T21-52-16-claude.md");
 
         fs::remove_dir_all(dir).ok();
     }
