@@ -59,8 +59,7 @@ use crate::error::CassioError;
 use crate::parser::Parser;
 use crate::training::{
     ParsedSession, TrainingEvent, TrainingMetadata, TrainingSession, TrainingSource,
-    detect_embedded_content, event_usage_from_tokens, hash_named_chunks, next_event_id,
-    training_stats_from_session,
+    event_usage_from_tokens, hash_named_chunks, next_event_id, training_stats_from_session,
 };
 
 /// Parser for OpenCode's fragmented JSON session storage.
@@ -357,7 +356,6 @@ fn parse_session(
                 model: Some(model.clone()),
                 raw_text: None,
                 sanitized_text: None,
-                embedded_content_flags: Default::default(),
                 tool_name: None,
                 tool_call_id: None,
                 tool_input_raw: None,
@@ -402,7 +400,6 @@ fn parse_session(
                                 model: None,
                                 raw_text: Some(text.clone()),
                                 sanitized_text: None,
-                                embedded_content_flags: detect_embedded_content(text),
                                 tool_name: None,
                                 tool_call_id: None,
                                 tool_input_raw: None,
@@ -429,7 +426,6 @@ fn parse_session(
                             model: None,
                             raw_text: Some(text.clone()),
                             sanitized_text: None,
-                            embedded_content_flags: detect_embedded_content(text),
                             tool_name: None,
                             tool_call_id: None,
                             tool_input_raw: None,
@@ -498,7 +494,6 @@ fn parse_session(
                                 model: current_model.clone(),
                                 raw_text: Some(text.clone()),
                                 sanitized_text: None,
-                                embedded_content_flags: detect_embedded_content(text),
                                 tool_name: None,
                                 tool_call_id: None,
                                 tool_input_raw: None,
@@ -595,7 +590,6 @@ fn parse_session(
                                 })),
                             }))
                             .ok();
-                            let flag_text = serde_json::to_string(&raw_output).unwrap_or_default();
                             training_events.push(TrainingEvent {
                                 event_id: next_event_id(sequence),
                                 sequence,
@@ -605,7 +599,6 @@ fn parse_session(
                                 model: current_model.clone(),
                                 raw_text: None,
                                 sanitized_text: None,
-                                embedded_content_flags: detect_embedded_content(&flag_text),
                                 tool_name: Some(tool_name.to_string()),
                                 tool_call_id: Some(loaded.id.clone()),
                                 tool_input_raw: state.input.clone(),

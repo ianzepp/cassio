@@ -50,7 +50,7 @@ use crate::error::CassioError;
 use crate::parser::Parser;
 use crate::training::{
     EventUsage, ParsedSession, TrainingEvent, TrainingMetadata, TrainingSession, TrainingSource,
-    detect_embedded_content, hash_named_chunks, next_event_id, training_stats_from_session,
+    hash_named_chunks, next_event_id, training_stats_from_session,
 };
 
 /// Parser for Claude Code JSONL session logs.
@@ -198,7 +198,6 @@ fn parse_lines<I: Iterator<Item = String>>(
                         model: None,
                         raw_text: Some(raw.clone()),
                         sanitized_text: None,
-                        embedded_content_flags: detect_embedded_content(&raw),
                         tool_name: None,
                         tool_call_id: None,
                         tool_input_raw: None,
@@ -272,7 +271,6 @@ fn parse_lines<I: Iterator<Item = String>>(
                             model: None,
                             raw_text: Some(content.to_string()),
                             sanitized_text: None,
-                            embedded_content_flags: detect_embedded_content(content),
                             tool_name: None,
                             tool_call_id: None,
                             tool_input_raw: None,
@@ -363,7 +361,6 @@ fn append_claude_user_training_events(
                 model: None,
                 raw_text: Some(text.to_string()),
                 sanitized_text: None,
-                embedded_content_flags: detect_embedded_content(text),
                 tool_name: None,
                 tool_call_id: None,
                 tool_input_raw: None,
@@ -390,7 +387,6 @@ fn append_claude_user_training_events(
                             model: None,
                             raw_text: Some(text.to_string()),
                             sanitized_text: None,
-                            embedded_content_flags: detect_embedded_content(text),
                             tool_name: None,
                             tool_call_id: None,
                             tool_input_raw: None,
@@ -404,7 +400,6 @@ fn append_claude_user_training_events(
                     "tool_result" => {
                         *sequence += 1;
                         let serialized = serde_json::to_value(block).ok();
-                        let text = serde_json::to_string(block).unwrap_or_default();
                         training_events.push(TrainingEvent {
                             event_id: next_event_id(*sequence),
                             sequence: *sequence,
@@ -414,7 +409,6 @@ fn append_claude_user_training_events(
                             model: None,
                             raw_text: None,
                             sanitized_text: None,
-                            embedded_content_flags: detect_embedded_content(&text),
                             tool_name: None,
                             tool_call_id: block
                                 .get("tool_use_id")
@@ -469,7 +463,6 @@ fn append_claude_assistant_training_events(
             model: Some(model.to_string()),
             raw_text: None,
             sanitized_text: None,
-            embedded_content_flags: Default::default(),
             tool_name: None,
             tool_call_id: None,
             tool_input_raw: None,
@@ -516,7 +509,6 @@ fn append_claude_assistant_training_events(
                         model: model.map(|value| value.to_string()),
                         raw_text: Some(text.to_string()),
                         sanitized_text: None,
-                        embedded_content_flags: detect_embedded_content(text),
                         tool_name: None,
                         tool_call_id: None,
                         tool_input_raw: None,
@@ -539,7 +531,6 @@ fn append_claude_assistant_training_events(
                         model: model.map(|value| value.to_string()),
                         raw_text: Some(text.to_string()),
                         sanitized_text: None,
-                        embedded_content_flags: detect_embedded_content(text),
                         tool_name: None,
                         tool_call_id: None,
                         tool_input_raw: None,
@@ -561,7 +552,6 @@ fn append_claude_assistant_training_events(
                         model: model.map(|value| value.to_string()),
                         raw_text: None,
                         sanitized_text: None,
-                        embedded_content_flags: Default::default(),
                         tool_name: block
                             .get("name")
                             .and_then(|value| value.as_str())

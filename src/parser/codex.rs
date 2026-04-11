@@ -55,7 +55,7 @@ use crate::error::CassioError;
 use crate::parser::Parser;
 use crate::training::{
     ParsedSession, TrainingEvent, TrainingMetadata, TrainingSession, TrainingSource,
-    detect_embedded_content, hash_named_chunks, next_event_id, training_stats_from_session,
+    hash_named_chunks, next_event_id, training_stats_from_session,
 };
 
 /// Parser for OpenAI Codex `rollout-*.jsonl` session logs.
@@ -243,7 +243,6 @@ fn parse_lines<I: Iterator<Item = String>>(
                                             model: current_model.clone(),
                                             raw_text: Some(text.to_string()),
                                             sanitized_text: None,
-                                            embedded_content_flags: detect_embedded_content(text),
                                             tool_name: None,
                                             tool_call_id: None,
                                             tool_input_raw: None,
@@ -313,7 +312,6 @@ fn parse_lines<I: Iterator<Item = String>>(
                             model: current_model.clone(),
                             raw_text: None,
                             sanitized_text: None,
-                            embedded_content_flags: Default::default(),
                             tool_name: Some(tool_name),
                             tool_call_id: record
                                 .payload
@@ -412,7 +410,6 @@ fn parse_lines<I: Iterator<Item = String>>(
                                 model: current_model.clone(),
                                 raw_text: None,
                                 sanitized_text: None,
-                                embedded_content_flags: detect_embedded_content(output),
                                 tool_name: Some(name),
                                 tool_call_id: Some(call_id.to_string()),
                                 tool_input_raw: serde_json::from_str(&args_json).ok(),
@@ -436,7 +433,6 @@ fn parse_lines<I: Iterator<Item = String>>(
                             model: current_model.clone(),
                             raw_text: Some(raw_text.clone()),
                             sanitized_text: None,
-                            embedded_content_flags: detect_embedded_content(&raw_text),
                             tool_name: None,
                             tool_call_id: None,
                             tool_input_raw: None,
@@ -497,7 +493,6 @@ fn parse_lines<I: Iterator<Item = String>>(
                         model: None,
                         raw_text: Some(msg.to_string()),
                         sanitized_text: None,
-                        embedded_content_flags: detect_embedded_content(msg),
                         tool_name: None,
                         tool_call_id: None,
                         tool_input_raw: None,
@@ -574,7 +569,6 @@ fn parse_lines<I: Iterator<Item = String>>(
                         model: Some(m.to_string()),
                         raw_text: None,
                         sanitized_text: None,
-                        embedded_content_flags: Default::default(),
                         tool_name: None,
                         tool_call_id: None,
                         tool_input_raw: None,

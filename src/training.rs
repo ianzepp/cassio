@@ -26,7 +26,6 @@ pub struct TrainingSession {
     pub events: Vec<TrainingEvent>,
     pub stats: TrainingStats,
     pub sanitization: SanitizationReport,
-    pub quality_flags: QualityFlags,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -75,7 +74,6 @@ pub struct TrainingEvent {
     pub raw_text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sanitized_text: Option<String>,
-    pub embedded_content_flags: EmbeddedContentFlags,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -91,14 +89,6 @@ pub struct TrainingEvent {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage: Option<EventUsage>,
     pub source_record_refs: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct EmbeddedContentFlags {
-    pub contains_embedded_transcript: bool,
-    pub contains_generated_summary: bool,
-    pub contains_large_pasted_block: bool,
-    pub contains_prompt_template: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -134,17 +124,6 @@ pub struct SanitizationReport {
     pub dropped_block_kinds: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct QualityFlags {
-    pub contains_embedded_transcript: bool,
-    pub contains_generated_summary: bool,
-    pub contains_large_pasted_block: bool,
-    pub contains_prompt_template: bool,
-    pub likely_meta_session: bool,
-    pub tool_output_truncated: bool,
-    pub ordering_confidence: String,
-}
-
 impl TrainingSession {
     pub fn new(
         parser_version: &str,
@@ -167,39 +146,16 @@ impl TrainingSession {
                 dropped_block_count: 0,
                 dropped_block_kinds: Vec::new(),
             },
-            quality_flags: QualityFlags {
-                contains_embedded_transcript: false,
-                contains_generated_summary: false,
-                contains_large_pasted_block: false,
-                contains_prompt_template: false,
-                likely_meta_session: false,
-                tool_output_truncated: false,
-                ordering_confidence: "high".to_string(),
-            },
         }
     }
 
     pub fn push_event(&mut self, event: TrainingEvent) {
-        self.merge_event_flags(&event.embedded_content_flags);
-        if is_tool_output_truncated(&event) {
-            self.quality_flags.tool_output_truncated = true;
-        }
-        if event.event_kind == "meta_record" || event.event_kind == "system_context" {
-            self.quality_flags.likely_meta_session = true;
-        }
         self.events.push(event);
     }
 
     pub fn record_dropped(&mut self, kind: &str) {
         self.sanitization.dropped_block_count += 1;
         push_unique(&mut self.sanitization.dropped_block_kinds, kind);
-    }
-
-    pub fn merge_event_flags(&mut self, flags: &EmbeddedContentFlags) {
-        self.quality_flags.contains_embedded_transcript |= flags.contains_embedded_transcript;
-        self.quality_flags.contains_generated_summary |= flags.contains_generated_summary;
-        self.quality_flags.contains_large_pasted_block |= flags.contains_large_pasted_block;
-        self.quality_flags.contains_prompt_template |= flags.contains_prompt_template;
     }
 }
 
@@ -239,39 +195,6 @@ where
     set.into_iter().collect()
 }
 
-pub fn detect_embedded_content(text: &str) -> EmbeddedContentFlags {
-    let lower = text.to_lowercase();
-    EmbeddedContentFlags {
-        contains_embedded_transcript: lower.contains("📋 session:")
-            || lower.contains("\"schema_version\":\"training_session.")
-            || lower.contains("\"event_kind\":")
-            || lower.contains("assistant:")
-            || lower.contains("user:")
-            || lower.contains("tool_result"),
-        contains_generated_summary: lower.contains("daily summary")
-            || lower.contains("monthly summary")
-            || lower.contains("generated summary")
-            || lower.contains("compaction"),
-        contains_large_pasted_block: text.len() > 8_000 || text.lines().count() > 200,
-        contains_prompt_template: lower.contains("src/prompts/")
-            || lower.contains("you are codex")
-            || lower.contains("you are claude")
-            || lower.contains("compact.md")
-            || lower.contains("system prompt"),
-    }
-}
-
-pub fn merge_embedded_flags(flags: &[EmbeddedContentFlags]) -> EmbeddedContentFlags {
-    let mut merged = EmbeddedContentFlags::default();
-    for flag in flags {
-        merged.contains_embedded_transcript |= flag.contains_embedded_transcript;
-        merged.contains_generated_summary |= flag.contains_generated_summary;
-        merged.contains_large_pasted_block |= flag.contains_large_pasted_block;
-        merged.contains_prompt_template |= flag.contains_prompt_template;
-    }
-    merged
-}
-
 pub fn hash_named_chunks<I, A, B>(chunks: I) -> String
 where
     I: IntoIterator<Item = (A, B)>,
@@ -292,12 +215,4 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
     if !values.iter().any(|existing| existing == value) {
         values.push(value.to_string());
     }
-}
-
-fn is_tool_output_truncated(event: &TrainingEvent) -> bool {
-    event
-        .tool_output_raw
-        .as_ref()
-        .and_then(|value| value.as_str())
-        .is_some_and(|text| text.ends_with("..."))
 }
