@@ -74,7 +74,7 @@ const MAX_INPUT_BYTES: usize = 150 * 1024;
 
 enum DailyCompactionPlan {
     Single(String),
-    Chunked(Vec<String>, String),
+    Chunked(Vec<String>),
 }
 
 /// Run daily compaction over all pending days in `input_dir`.
@@ -422,22 +422,38 @@ fn compact_day(
         }
     }
 
+    let out_dir = output_dir.join(month);
+    std::fs::create_dir_all(&out_dir)?;
     let output = match plan_daily_compaction(day, &sessions) {
         DailyCompactionPlan::Single(input) => invoke_llm(&input, model, provider)?,
-        DailyCompactionPlan::Chunked(chunk_inputs, merge_input) => {
+        DailyCompactionPlan::Chunked(chunk_inputs) => {
+            let checkpoint_dir = daily_checkpoint_dir(&out_dir, day);
+            std::fs::create_dir_all(&checkpoint_dir)?;
             let mut chunk_summaries = Vec::new();
             for (i, chunk_input) in chunk_inputs.iter().enumerate() {
                 eprint!(" chunk [{}/{}]...", i + 1, chunk_inputs.len());
-                let output = invoke_llm(chunk_input, model, provider)?;
+                let checkpoint_path = daily_chunk_checkpoint_path(&checkpoint_dir, i);
+                let output = if let Some(cached) = read_cached_chunk_summary(&checkpoint_path)? {
+                    eprintln!(" cached");
+                    cached
+                } else {
+                    let output = invoke_llm(chunk_input, model, provider)?;
+                    if output.trim().is_empty() {
+                        eprintln!(" [FAIL]");
+                        return Ok(false);
+                    }
+                    write_atomic(&checkpoint_path, &output)?;
+                    eprintln!(" ok");
+                    output
+                };
                 if output.trim().is_empty() {
                     eprintln!(" [FAIL]");
                     return Ok(false);
                 }
-                eprintln!(" ok");
                 chunk_summaries.push((format!("chunk-{}", i + 1), output));
             }
 
-            let merge_input = build_daily_merge_input(day, &chunk_summaries, &merge_input);
+            let merge_input = build_daily_merge_input(day, &chunk_summaries);
             invoke_llm(&merge_input, model, provider)?
         }
     };
@@ -446,10 +462,8 @@ fn compact_day(
         return Ok(false);
     }
 
-    let out_dir = output_dir.join(month);
-    std::fs::create_dir_all(&out_dir)?;
     let out_path = out_dir.join(format!("{day}.daily.md"));
-    std::fs::write(&out_path, &output)?;
+    write_atomic(&out_path, &output)?;
 
     Ok(true)
 }
@@ -468,7 +482,7 @@ fn plan_daily_compaction(day: &str, sessions: &[(String, String)]) -> DailyCompa
         .iter()
         .map(|chunk| build_daily_input(COMPACT_PROMPT, day, chunk))
         .collect();
-    DailyCompactionPlan::Chunked(chunk_inputs, day.to_string())
+    DailyCompactionPlan::Chunked(chunk_inputs)
 }
 
 fn build_daily_input(prompt: &str, day: &str, sessions: &[(String, String)]) -> String {
@@ -488,7 +502,7 @@ fn build_daily_input(prompt: &str, day: &str, sessions: &[(String, String)]) -> 
     input
 }
 
-fn build_daily_merge_input(day: &str, chunks: &[(String, String)], merge_day: &str) -> String {
+fn build_daily_merge_input(day: &str, chunks: &[(String, String)]) -> String {
     let mut input = String::new();
     input.push_str(DAILY_MERGE_PROMPT);
     input.push_str(&format!(
@@ -501,8 +515,49 @@ fn build_daily_merge_input(day: &str, chunks: &[(String, String)], merge_day: &s
         input.push_str(&format!("\n--- (end {name}) ---\n\n"));
     }
 
-    input.push_str(&format!("---END DAILY PARTIALS ({merge_day})---\n"));
+    input.push_str(&format!("---END DAILY PARTIALS ({day})---\n"));
     input
+}
+
+fn daily_checkpoint_dir(out_dir: &Path, day: &str) -> PathBuf {
+    out_dir.join(".cassio-checkpoints").join(day)
+}
+
+fn daily_chunk_checkpoint_path(checkpoint_dir: &Path, index: usize) -> PathBuf {
+    checkpoint_dir.join(format!("chunk-{:04}.md", index + 1))
+}
+
+fn read_cached_chunk_summary(path: &Path) -> Result<Option<String>, CassioError> {
+    if !path.exists() {
+        return Ok(None);
+    }
+
+    let content = std::fs::read_to_string(path)?;
+    if content.trim().is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(content))
+}
+
+fn write_atomic(path: &Path, content: &str) -> Result<(), CassioError> {
+    let parent = path.parent().ok_or_else(|| {
+        CassioError::Other(format!(
+            "Cannot determine parent directory for {}",
+            path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent)?;
+
+    let tmp_path = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|ext| ext.to_str())
+            .unwrap_or("tmp")
+    ));
+    std::fs::write(&tmp_path, content)?;
+    std::fs::rename(&tmp_path, path)?;
+    Ok(())
 }
 
 fn is_session_transcript_name(name: &str) -> bool {
@@ -861,7 +916,7 @@ mod tests {
                 assert!(input.contains("2025-01-15"));
                 assert!(input.contains("small content"));
             }
-            DailyCompactionPlan::Chunked(_, _) => panic!("expected single-pass plan"),
+            DailyCompactionPlan::Chunked(_) => panic!("expected single-pass plan"),
         }
     }
 
@@ -871,13 +926,28 @@ mod tests {
         let sessions = vec![("a.md".to_string(), big.clone()), ("b.md".to_string(), big)];
         let plan = plan_daily_compaction("2025-01-15", &sessions);
         match plan {
-            DailyCompactionPlan::Chunked(chunk_inputs, day) => {
+            DailyCompactionPlan::Chunked(chunk_inputs) => {
                 assert!(chunk_inputs.len() >= 2);
-                assert_eq!(day, "2025-01-15");
                 assert!(chunk_inputs[0].contains("2025-01-15"));
             }
             DailyCompactionPlan::Single(_) => panic!("expected chunked plan"),
         }
+    }
+
+    #[test]
+    fn test_build_daily_merge_input_structure() {
+        let chunks = vec![
+            ("chunk-1".to_string(), "partial one".to_string()),
+            ("chunk-2".to_string(), "partial two".to_string()),
+        ];
+        let result = build_daily_merge_input("2025-01-15", &chunks);
+        assert!(result.starts_with(DAILY_MERGE_PROMPT));
+        assert!(result.contains("2025-01-15"));
+        assert!(result.contains("2 chunks"));
+        assert!(result.contains("partial one"));
+        assert!(result.contains("partial two"));
+        assert!(result.contains("---BEGIN DAILY PARTIALS"));
+        assert!(result.contains("---END DAILY PARTIALS (2025-01-15)---"));
     }
 
     #[test]
@@ -947,6 +1017,48 @@ seventh line that should be cut
         assert!(!result.contains("✅ Read"));
         // Second user prompt should be included
         assert!(result.contains("👤 another question"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_daily_chunk_checkpoint_path_format() {
+        let dir = Path::new("/tmp/checkpoints");
+        let path = daily_chunk_checkpoint_path(dir, 0);
+        assert_eq!(path, Path::new("/tmp/checkpoints/chunk-0001.md"));
+    }
+
+    #[test]
+    fn test_read_cached_chunk_summary_missing_and_empty() {
+        let dir =
+            std::env::temp_dir().join(format!("cassio_test_chunk_cache_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let missing = dir.join("missing.md");
+        assert!(read_cached_chunk_summary(&missing).unwrap().is_none());
+
+        let empty = dir.join("empty.md");
+        std::fs::write(&empty, "   \n").unwrap();
+        assert!(read_cached_chunk_summary(&empty).unwrap().is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_read_cached_chunk_summary_returns_content() {
+        let dir = std::env::temp_dir().join(format!(
+            "cassio_test_chunk_cache_hit_{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let path = dir.join("chunk-0001.md");
+        std::fs::write(&path, "saved partial").unwrap();
+
+        assert_eq!(
+            read_cached_chunk_summary(&path).unwrap().as_deref(),
+            Some("saved partial")
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }
