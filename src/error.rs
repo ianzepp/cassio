@@ -20,11 +20,14 @@ pub enum CassioError {
     #[error("Empty session: {0}")]
     EmptySession(PathBuf),
 
-    #[error("{operation} completed with partial failures ({failed} failed, {completed} succeeded)")]
+    #[error(
+        "{operation} completed with partial failures ({failed} failed, {completed} succeeded): {details}"
+    )]
     PartialRun {
         operation: &'static str,
         completed: usize,
         failed: usize,
+        details: String,
     },
 
     #[error("{0}")]

@@ -130,6 +130,12 @@ enum CompactAction {
         /// LLM provider: ollama, claude, codex, or openrouter
         #[arg(short, long)]
         provider: Option<String>,
+        /// Per-call timeout for each chunk or merge request, in seconds
+        #[arg(long, default_value_t = 300)]
+        chunk_timeout: u64,
+        /// Maximum retries for each chunk or merge request
+        #[arg(long, default_value_t = 3)]
+        max_retries: usize,
     },
     /// Compact daily session transcripts into daily summaries
     Dailies {
@@ -145,6 +151,12 @@ enum CompactAction {
         /// LLM provider: ollama, claude, codex, or openrouter
         #[arg(short, long)]
         provider: Option<String>,
+        /// Per-call timeout for each chunk or merge request, in seconds
+        #[arg(long, default_value_t = 300)]
+        chunk_timeout: u64,
+        /// Maximum retries for each chunk or merge request
+        #[arg(long, default_value_t = 3)]
+        max_retries: usize,
     },
     /// Synthesize daily compactions into a monthly summary
     Monthly {
@@ -228,9 +240,16 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 .clone()
                 .unwrap_or_else(|| "ollama".to_string());
             match action {
-                CompactAction::All { model, provider } => {
+                CompactAction::All {
+                    model,
+                    provider,
+                    chunk_timeout,
+                    max_retries,
+                } => {
                     let model = model.unwrap_or_else(|| default_model.clone());
                     let provider = provider.unwrap_or_else(|| default_provider.clone());
+                    let compact_options =
+                        cassio::compact::CompactOptions::new(chunk_timeout, max_retries);
                     let output_dir = cli
                         .output
                         .clone()
@@ -286,6 +305,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         None,
                         &model,
                         &provider,
+                        &compact_options,
                     )?;
 
                     if daily_report.failed > 0 {
@@ -293,6 +313,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                             operation: "cassio compact all",
                             completed: daily_report.compacted,
                             failed: daily_report.failed,
+                            details: daily_report.failed_details.join("; "),
                         });
                     }
 
@@ -313,9 +334,13 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     limit,
                     model,
                     provider,
+                    chunk_timeout,
+                    max_retries,
                 } => {
                     let model = model.unwrap_or_else(|| default_model.clone());
                     let provider = provider.unwrap_or_else(|| default_provider.clone());
+                    let compact_options =
+                        cassio::compact::CompactOptions::new(chunk_timeout, max_retries);
                     let input_dir = input
                         .or_else(|| cli.output.clone())
                         .or_else(|| config_output.clone())
@@ -339,12 +364,14 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         limit,
                         &model,
                         &provider,
+                        &compact_options,
                     )?;
                     if daily_report.failed > 0 {
                         return Err(CassioError::PartialRun {
                             operation: "cassio compact dailies",
                             completed: daily_report.compacted,
                             failed: daily_report.failed,
+                            details: daily_report.failed_details.join("; "),
                         });
                     }
                     cassio::git::auto_commit_and_push(

@@ -282,9 +282,11 @@ finished: 2m25s, 2 compacted, 1 failed
 
 Output files are written as `YYYY-MM/YYYY-MM-DD.daily.md` in the output directory. Days that already have a `.daily.md` are skipped automatically.
 
-Chunked days are resumable. Cassio caches successful chunk summaries under `YYYY-MM/.cassio-checkpoints/YYYY-MM-DD/` and writes a machine-readable `status.json` there with the current phase, completed chunk count, and the last classified failure (`timeout`, `process`, `transport`, `response_parse`, `empty_output`, or `io`).
+Chunked days resume by default from on-disk state. Cassio caches successful chunk summaries under `YYYY-MM/.cassio-checkpoints/YYYY-MM-DD/`, writes machine-readable day state to `status.json`, appends structured chunk progress events to `progress.jsonl`, and marks chunks as finalized only after the downstream daily summary is written successfully.
 
-Each provider call uses a 5 minute per-call timeout and up to 3 attempts with bounded backoff for transient failures. If a run finishes with one or more failed days, `cassio compact dailies` exits with code `2` so wrappers can distinguish partial completion from a clean run.
+Failures are classified as `timeout`, `provider_http_error`, `parse_error`, `empty_response`, `process`, `transport`, or `io`. On parse failures, cassio also writes the raw failing provider response into the same checkpoint directory for debugging.
+
+Each chunk or merge request uses a per-call timeout and bounded retries. The defaults are 5 minutes and 3 retries, configurable with `--chunk-timeout` and `--max-retries`. If a run finishes with one or more failed days, `cassio compact dailies` exits with code `2` and names the exact failed day and chunk or merge phase.
 
 The compaction prompt extracts:
 - **Session clusters** grouped by topic, with verbatim user quotes
@@ -411,10 +413,12 @@ Options:
   -l, --limit <N>      Maximum number of days to process
   -m, --model <MODEL>     Model name passed to the selected provider
   -p, --provider <NAME>  LLM provider: ollama, claude, codex, or openrouter
+      --chunk-timeout <SECONDS>  Per-call timeout for each chunk or merge request [default: 300]
+      --max-retries <N>          Maximum retries for each chunk or merge request [default: 3]
   -o, --output <DIR>      Output directory for compaction files
 ```
 
-If `-i` is omitted, falls back to `-o` or config `output`. If `-o` is omitted, falls back to config `output` or `-i`. Requires the selected provider CLI to be installed.
+If `-i` is omitted, falls back to `-o` or config `output`. If `-o` is omitted, falls back to config `output` or `-i`. Requires the selected provider CLI to be installed. Resume is the default behavior whenever checkpoint state already exists on disk.
 
 Exit status:
 - `0` = all requested days compacted cleanly
@@ -443,6 +447,8 @@ cassio compact all [OPTIONS]
 Options:
   -m, --model <MODEL>     Model name passed to the selected provider
   -p, --provider <NAME>  LLM provider: ollama, claude, codex, or openrouter
+      --chunk-timeout <SECONDS>  Per-call timeout for each chunk or merge request [default: 300]
+      --max-retries <N>          Maximum retries for each chunk or merge request [default: 3]
   -o, --output <DIR>      Directory for transcripts, dailies, and monthlies
 ```
 

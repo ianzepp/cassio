@@ -52,6 +52,7 @@
 //!   chronological order without an explicit sort step.
 
 use std::collections::BTreeMap;
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Output};
@@ -89,9 +90,10 @@ enum DailyCompactionPlan {
 enum FailureClass {
     Timeout,
     Process,
+    ProviderHttpError,
     Transport,
-    ResponseParse,
-    EmptyOutput,
+    ParseError,
+    EmptyResponse,
     Io,
 }
 
@@ -100,15 +102,19 @@ impl FailureClass {
         match self {
             Self::Timeout => "timeout",
             Self::Process => "process",
+            Self::ProviderHttpError => "provider_http_error",
             Self::Transport => "transport",
-            Self::ResponseParse => "response_parse",
-            Self::EmptyOutput => "empty_output",
+            Self::ParseError => "parse_error",
+            Self::EmptyResponse => "empty_response",
             Self::Io => "io",
         }
     }
 
     fn retryable(self) -> bool {
-        matches!(self, Self::Timeout | Self::Process | Self::Transport)
+        matches!(
+            self,
+            Self::Timeout | Self::Process | Self::ProviderHttpError | Self::Transport
+        )
     }
 }
 
@@ -116,6 +122,7 @@ impl FailureClass {
 struct InvocationError {
     class: FailureClass,
     detail: String,
+    raw_response_body: Option<String>,
 }
 
 impl InvocationError {
@@ -123,7 +130,13 @@ impl InvocationError {
         Self {
             class,
             detail: detail.into(),
+            raw_response_body: None,
         }
+    }
+
+    fn with_raw_response_body(mut self, raw_response_body: impl Into<String>) -> Self {
+        self.raw_response_body = Some(raw_response_body.into());
+        self
     }
 }
 
@@ -136,14 +149,70 @@ struct DailyCheckpointStatus<'a> {
     model: &'a str,
     total_chunks: usize,
     completed_chunks: usize,
+    finalized_chunks: usize,
     failure_class: Option<&'a str>,
     failure_detail: Option<&'a str>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CompactOptions {
+    pub chunk_timeout: Duration,
+    pub max_retries: usize,
+    pub resume: bool,
+}
+
+impl CompactOptions {
+    pub fn new(chunk_timeout_secs: u64, max_retries: usize) -> Self {
+        Self {
+            chunk_timeout: Duration::from_secs(chunk_timeout_secs.max(1)),
+            max_retries: max_retries.max(1),
+            resume: true,
+        }
+    }
+}
+
+impl Default for CompactOptions {
+    fn default() -> Self {
+        Self {
+            chunk_timeout: LLM_TIMEOUT,
+            max_retries: LLM_RETRY_LIMIT,
+            resume: true,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DayFailure {
+    detail: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ProgressEvent<'a> {
+    day: &'a str,
+    phase: &'a str,
+    chunk_index: Option<usize>,
+    total_chunks: usize,
+    retry_count: usize,
+    elapsed_ms: u128,
+    outcome: &'a str,
+    failure_class: Option<&'a str>,
+    detail: Option<&'a str>,
+}
+
 #[derive(Debug, Clone, Copy)]
+struct InvocationContext<'a> {
+    checkpoint_dir: &'a Path,
+    day: &'a str,
+    phase: &'a str,
+    chunk_index: Option<usize>,
+    total_chunks: usize,
+}
+
+#[derive(Debug, Clone)]
 pub struct DailyRunReport {
     pub compacted: usize,
     pub failed: usize,
+    pub failed_details: Vec<String>,
 }
 
 /// Run daily compaction over all pending days in `input_dir`.
@@ -160,6 +229,7 @@ pub fn run_dailies(
     limit: Option<usize>,
     model: &str,
     provider: &str,
+    options: &CompactOptions,
 ) -> Result<DailyRunReport, CassioError> {
     let pending = find_pending_days(input_dir, output_dir)?;
 
@@ -168,6 +238,7 @@ pub fn run_dailies(
         return Ok(DailyRunReport {
             compacted: 0,
             failed: 0,
+            failed_details: Vec::new(),
         });
     }
 
@@ -180,24 +251,22 @@ pub fn run_dailies(
     let start = Instant::now();
     let mut compacted = 0usize;
     let mut failed = 0usize;
+    let mut failed_details = Vec::new();
 
     for (i, (day, files)) in to_process.iter().enumerate() {
         let month = day.get(..7).unwrap_or("unknown");
         let relative = format!("{month}/{day}");
         eprint!("dailies: [{} of {total}] {relative}...", i + 1);
 
-        match compact_day(output_dir, day, month, files, model, provider) {
-            Ok(true) => {
+        match compact_day(output_dir, day, month, files, model, provider, options) {
+            Ok(()) => {
                 eprintln!(" ok");
                 compacted += 1;
             }
-            Ok(false) => {
+            Err(err) => {
                 eprintln!(" [FAIL]");
                 failed += 1;
-            }
-            Err(e) => {
-                eprintln!(" [ERROR: {e}]");
-                failed += 1;
+                failed_details.push(err.detail);
             }
         }
     }
@@ -207,7 +276,11 @@ pub fn run_dailies(
         "finished: {}, {compacted} compacted, {failed} failed",
         format_elapsed(elapsed)
     );
-    Ok(DailyRunReport { compacted, failed })
+    Ok(DailyRunReport {
+        compacted,
+        failed,
+        failed_details,
+    })
 }
 
 /// Compact all daily summary files for a single month into a `.monthly.md` summary.
@@ -229,6 +302,8 @@ pub fn run_monthly(
     model: &str,
     provider: &str,
 ) -> Result<(), CassioError> {
+    let options = CompactOptions::default();
+
     // Validate month format
     if month.len() != 7 || month.as_bytes()[4] != b'-' {
         return Err(CassioError::Other(format!(
@@ -290,8 +365,20 @@ pub fn run_monthly(
         eprintln!("  single pass ({} bytes)", total_content_bytes);
         let input = build_monthly_input(MONTHLY_PROMPT, month, &contents);
         eprint!("  processing...");
-        let output = invoke_llm(&input, model, provider)
-            .map_err(|e| CassioError::Other(format!("monthly single-pass failed: {}", e.detail)))?;
+        let output = invoke_llm(
+            &input,
+            model,
+            provider,
+            &options,
+            InvocationContext {
+                checkpoint_dir: &month_dir,
+                day: month,
+                phase: "monthly_single",
+                chunk_index: Some(1),
+                total_chunks: 1,
+            },
+        )
+        .map_err(|e| CassioError::Other(format!("monthly single-pass failed: {}", e.detail)))?;
         eprintln!(" ok");
         output
     } else {
@@ -318,7 +405,20 @@ pub fn run_monthly(
             );
 
             let input = build_monthly_input(MONTHLY_PROMPT, month, chunk);
-            let output = invoke_llm(&input, model, provider).map_err(|e| {
+            let output = invoke_llm(
+                &input,
+                model,
+                provider,
+                &options,
+                InvocationContext {
+                    checkpoint_dir: &month_dir,
+                    day: month,
+                    phase: "monthly_chunk",
+                    chunk_index: Some(i + 1),
+                    total_chunks: chunks.len(),
+                },
+            )
+            .map_err(|e| {
                 CassioError::Other(format!("monthly chunk {} failed: {}", i + 1, e.detail))
             })?;
 
@@ -337,8 +437,20 @@ pub fn run_monthly(
         // Merge pass
         eprint!("  merging {} chunk summaries...", chunk_summaries.len());
         let merge_input = build_monthly_input(MONTHLY_MERGE_PROMPT, month, &chunk_summaries);
-        let merged = invoke_llm(&merge_input, model, provider)
-            .map_err(|e| CassioError::Other(format!("monthly merge failed: {}", e.detail)))?;
+        let merged = invoke_llm(
+            &merge_input,
+            model,
+            provider,
+            &options,
+            InvocationContext {
+                checkpoint_dir: &month_dir,
+                day: month,
+                phase: "monthly_merge",
+                chunk_index: None,
+                total_chunks: chunk_summaries.len(),
+            },
+        )
+        .map_err(|e| CassioError::Other(format!("monthly merge failed: {}", e.detail)))?;
         eprintln!(" ok");
         merged
     };
@@ -484,10 +596,13 @@ fn compact_day(
     files: &[PathBuf],
     model: &str,
     provider: &str,
-) -> Result<bool, CassioError> {
+    options: &CompactOptions,
+) -> Result<(), DayFailure> {
     let mut sessions = Vec::new();
     for file in files {
-        let extracted = extract_session(file)?;
+        let extracted = extract_session(file).map_err(|e| DayFailure {
+            detail: format!("{day}: failed to extract {}: {e}", file.display()),
+        })?;
         if !extracted.is_empty() {
             let name = file
                 .file_name()
@@ -499,10 +614,21 @@ fn compact_day(
     }
 
     let out_dir = output_dir.join(month);
-    std::fs::create_dir_all(&out_dir)?;
+    std::fs::create_dir_all(&out_dir).map_err(|e| DayFailure {
+        detail: format!("{day}: failed to create {}: {e}", out_dir.display()),
+    })?;
     let checkpoint_dir = daily_checkpoint_dir(&out_dir, day);
-    std::fs::create_dir_all(&checkpoint_dir)?;
-    let output = match plan_daily_compaction(day, &sessions) {
+    std::fs::create_dir_all(&checkpoint_dir).map_err(|e| DayFailure {
+        detail: format!("{day}: failed to create {}: {e}", checkpoint_dir.display()),
+    })?;
+    let progress_path = progress_log_path(&checkpoint_dir);
+    let plan = plan_daily_compaction(day, &sessions);
+    let total_chunks = match &plan {
+        DailyCompactionPlan::Single(_) => 1,
+        DailyCompactionPlan::Chunked(chunk_inputs) => chunk_inputs.len(),
+    };
+
+    let output = match plan {
         DailyCompactionPlan::Single(input) => {
             write_day_status(
                 &checkpoint_dir,
@@ -513,12 +639,22 @@ fn compact_day(
                 model,
                 1,
                 0,
+                0,
                 None,
                 None,
-            )?;
-            match invoke_llm(&input, model, provider) {
+            )
+            .map_err(day_status_err(day))?;
+            let context = InvocationContext {
+                checkpoint_dir: &checkpoint_dir,
+                day,
+                phase: "single",
+                chunk_index: Some(1),
+                total_chunks: 1,
+            };
+            match invoke_llm(&input, model, provider, options, context) {
                 Ok(output) => output,
                 Err(err) => {
+                    let _ = write_parse_failure_artifact(&checkpoint_dir, "single", Some(1), &err);
                     write_day_status(
                         &checkpoint_dir,
                         day,
@@ -528,10 +664,18 @@ fn compact_day(
                         model,
                         1,
                         0,
+                        0,
                         Some(err.class.as_str()),
                         Some(&err.detail),
-                    )?;
-                    return Ok(false);
+                    )
+                    .map_err(day_status_err(day))?;
+                    return Err(DayFailure {
+                        detail: format!(
+                            "{day}: chunk 1 failed [{}] {}",
+                            err.class.as_str(),
+                            err.detail
+                        ),
+                    });
                 }
             }
         }
@@ -545,20 +689,56 @@ fn compact_day(
                 model,
                 chunk_inputs.len(),
                 0,
+                0,
                 None,
                 None,
-            )?;
+            )
+            .map_err(day_status_err(day))?;
             let mut chunk_summaries = Vec::new();
             for (i, chunk_input) in chunk_inputs.iter().enumerate() {
                 eprint!(" chunk [{}/{}]...", i + 1, chunk_inputs.len());
                 let checkpoint_path = daily_chunk_checkpoint_path(&checkpoint_dir, i);
-                let output = if let Some(cached) = read_cached_chunk_summary(&checkpoint_path)? {
+                let output = if options.resume {
+                    read_cached_chunk_summary(&checkpoint_path).map_err(|e| DayFailure {
+                        detail: format!("{day}: failed to read cached chunk {}: {e}", i + 1),
+                    })?
+                } else {
+                    None
+                };
+                let output = if let Some(cached) = output {
                     eprintln!(" cached");
+                    let _ = append_progress_event(
+                        &progress_path,
+                        &ProgressEvent {
+                            day,
+                            phase: "chunk",
+                            chunk_index: Some(i + 1),
+                            total_chunks: chunk_inputs.len(),
+                            retry_count: 0,
+                            elapsed_ms: 0,
+                            outcome: "cached",
+                            failure_class: None,
+                            detail: None,
+                        },
+                    );
                     cached
                 } else {
-                    let output = match invoke_llm(chunk_input, model, provider) {
+                    let context = InvocationContext {
+                        checkpoint_dir: &checkpoint_dir,
+                        day,
+                        phase: "chunk",
+                        chunk_index: Some(i + 1),
+                        total_chunks: chunk_inputs.len(),
+                    };
+                    let output = match invoke_llm(chunk_input, model, provider, options, context) {
                         Ok(output) => output,
                         Err(err) => {
+                            let _ = write_parse_failure_artifact(
+                                &checkpoint_dir,
+                                "chunk",
+                                Some(i + 1),
+                                &err,
+                            );
                             write_day_status(
                                 &checkpoint_dir,
                                 day,
@@ -568,11 +748,20 @@ fn compact_day(
                                 model,
                                 chunk_inputs.len(),
                                 i,
+                                0,
                                 Some(err.class.as_str()),
                                 Some(&err.detail),
-                            )?;
+                            )
+                            .map_err(day_status_err(day))?;
                             eprintln!(" [FAIL: {}]", err.class.as_str());
-                            return Ok(false);
+                            return Err(DayFailure {
+                                detail: format!(
+                                    "{day}: chunk {} failed [{}] {}",
+                                    i + 1,
+                                    err.class.as_str(),
+                                    err.detail
+                                ),
+                            });
                         }
                     };
                     if output.trim().is_empty() {
@@ -585,13 +774,23 @@ fn compact_day(
                             model,
                             chunk_inputs.len(),
                             i,
-                            Some(FailureClass::EmptyOutput.as_str()),
+                            0,
+                            Some(FailureClass::EmptyResponse.as_str()),
                             Some("provider returned empty chunk output"),
-                        )?;
+                        )
+                        .map_err(day_status_err(day))?;
                         eprintln!(" [FAIL]");
-                        return Ok(false);
+                        return Err(DayFailure {
+                            detail: format!("{day}: chunk {} failed [empty_response]", i + 1),
+                        });
                     }
-                    write_atomic(&checkpoint_path, &output)?;
+                    write_atomic(&checkpoint_path, &output).map_err(|e| DayFailure {
+                        detail: format!(
+                            "{day}: failed to write chunk {} checkpoint {}: {e}",
+                            i + 1,
+                            checkpoint_path.display()
+                        ),
+                    })?;
                     eprintln!(" ok");
                     output
                 };
@@ -605,11 +804,18 @@ fn compact_day(
                         model,
                         chunk_inputs.len(),
                         i,
-                        Some(FailureClass::EmptyOutput.as_str()),
+                        0,
+                        Some(FailureClass::EmptyResponse.as_str()),
                         Some("checkpointed chunk output was empty"),
-                    )?;
+                    )
+                    .map_err(day_status_err(day))?;
                     eprintln!(" [FAIL]");
-                    return Ok(false);
+                    return Err(DayFailure {
+                        detail: format!(
+                            "{day}: chunk {} failed [empty_response] cached output was empty",
+                            i + 1
+                        ),
+                    });
                 }
                 chunk_summaries.push((format!("chunk-{}", i + 1), output));
                 write_day_status(
@@ -621,9 +827,11 @@ fn compact_day(
                     model,
                     chunk_inputs.len(),
                     i + 1,
+                    0,
                     None,
                     None,
-                )?;
+                )
+                .map_err(day_status_err(day))?;
             }
 
             let merge_input = build_daily_merge_input(day, &chunk_summaries);
@@ -636,12 +844,22 @@ fn compact_day(
                 model,
                 chunk_inputs.len(),
                 chunk_inputs.len(),
+                0,
                 None,
                 None,
-            )?;
-            match invoke_llm(&merge_input, model, provider) {
+            )
+            .map_err(day_status_err(day))?;
+            let context = InvocationContext {
+                checkpoint_dir: &checkpoint_dir,
+                day,
+                phase: "merge",
+                chunk_index: None,
+                total_chunks: chunk_inputs.len(),
+            };
+            match invoke_llm(&merge_input, model, provider, options, context) {
                 Ok(output) => output,
                 Err(err) => {
+                    let _ = write_parse_failure_artifact(&checkpoint_dir, "merge", None, &err);
                     write_day_status(
                         &checkpoint_dir,
                         day,
@@ -651,10 +869,18 @@ fn compact_day(
                         model,
                         chunk_inputs.len(),
                         chunk_inputs.len(),
+                        0,
                         Some(err.class.as_str()),
                         Some(&err.detail),
-                    )?;
-                    return Ok(false);
+                    )
+                    .map_err(day_status_err(day))?;
+                    return Err(DayFailure {
+                        detail: format!(
+                            "{day}: merge failed [{}] {}",
+                            err.class.as_str(),
+                            err.detail
+                        ),
+                    });
                 }
             }
         }
@@ -668,16 +894,22 @@ fn compact_day(
             "finalize",
             provider,
             model,
-            1,
+            total_chunks,
             0,
-            Some(FailureClass::EmptyOutput.as_str()),
+            0,
+            Some(FailureClass::EmptyResponse.as_str()),
             Some("provider returned empty final output"),
-        )?;
-        return Ok(false);
+        )
+        .map_err(day_status_err(day))?;
+        return Err(DayFailure {
+            detail: format!("{day}: final output failed [empty_response]"),
+        });
     }
 
     let out_path = out_dir.join(format!("{day}.daily.md"));
-    write_atomic(&out_path, &output)?;
+    write_atomic(&out_path, &output).map_err(|e| DayFailure {
+        detail: format!("{day}: failed to write {}: {e}", out_path.display()),
+    })?;
     write_day_status(
         &checkpoint_dir,
         day,
@@ -685,13 +917,29 @@ fn compact_day(
         "finalize",
         provider,
         model,
-        1,
-        1,
+        total_chunks,
+        total_chunks,
+        total_chunks,
         None,
         None,
-    )?;
+    )
+    .map_err(day_status_err(day))?;
+    let _ = append_progress_event(
+        &progress_path,
+        &ProgressEvent {
+            day,
+            phase: "finalize",
+            chunk_index: None,
+            total_chunks,
+            retry_count: 0,
+            elapsed_ms: 0,
+            outcome: "completed",
+            failure_class: None,
+            detail: None,
+        },
+    );
 
-    Ok(true)
+    Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -704,6 +952,7 @@ fn write_day_status(
     model: &str,
     total_chunks: usize,
     completed_chunks: usize,
+    finalized_chunks: usize,
     failure_class: Option<&str>,
     failure_detail: Option<&str>,
 ) -> Result<(), CassioError> {
@@ -716,6 +965,7 @@ fn write_day_status(
         model,
         total_chunks,
         completed_chunks,
+        finalized_chunks,
         failure_class,
         failure_detail,
     };
@@ -968,16 +1218,54 @@ fn build_chunks(
 /// All providers read the prompt from stdin. Ollama and Claude write output to
 /// stdout; Codex uses a temporary file for output because its CLI does not support
 /// stdout streaming in exec mode.
-fn invoke_llm(input: &str, model: &str, provider: &str) -> Result<String, InvocationError> {
+fn invoke_llm(
+    input: &str,
+    model: &str,
+    provider: &str,
+    options: &CompactOptions,
+    context: InvocationContext<'_>,
+) -> Result<String, InvocationError> {
     let mut last_error = None;
 
-    for attempt in 1..=LLM_RETRY_LIMIT {
-        match invoke_llm_once(input, model, provider) {
-            Ok(output) => return Ok(output),
+    for attempt in 1..=options.max_retries {
+        let started = Instant::now();
+        match invoke_llm_once(input, model, provider, options.chunk_timeout) {
+            Ok(output) => {
+                let _ = append_progress_event(
+                    &progress_log_path(context.checkpoint_dir),
+                    &ProgressEvent {
+                        day: context.day,
+                        phase: context.phase,
+                        chunk_index: context.chunk_index,
+                        total_chunks: context.total_chunks,
+                        retry_count: attempt - 1,
+                        elapsed_ms: started.elapsed().as_millis(),
+                        outcome: "success",
+                        failure_class: None,
+                        detail: None,
+                    },
+                );
+                return Ok(output);
+            }
             Err(err) => {
-                let retryable = err.class.retryable() && attempt < LLM_RETRY_LIMIT;
+                let retryable = err.class.retryable() && attempt < options.max_retries;
+                let _ = append_progress_event(
+                    &progress_log_path(context.checkpoint_dir),
+                    &ProgressEvent {
+                        day: context.day,
+                        phase: context.phase,
+                        chunk_index: context.chunk_index,
+                        total_chunks: context.total_chunks,
+                        retry_count: attempt - 1,
+                        elapsed_ms: started.elapsed().as_millis(),
+                        outcome: if retryable { "retry" } else { "failure" },
+                        failure_class: Some(err.class.as_str()),
+                        detail: Some(&err.detail),
+                    },
+                );
                 eprintln!(
-                    " llm: attempt {attempt}/{LLM_RETRY_LIMIT} failed [{}]: {}",
+                    " llm: attempt {attempt}/{} failed [{}]: {}",
+                    options.max_retries,
                     err.class.as_str(),
                     err.detail
                 );
@@ -1001,12 +1289,17 @@ fn invoke_llm(input: &str, model: &str, provider: &str) -> Result<String, Invoca
     }))
 }
 
-fn invoke_llm_once(input: &str, model: &str, provider: &str) -> Result<String, InvocationError> {
+fn invoke_llm_once(
+    input: &str,
+    model: &str,
+    provider: &str,
+    chunk_timeout: Duration,
+) -> Result<String, InvocationError> {
     match provider {
-        "ollama" => invoke_stdio("ollama", &["run", model], input),
-        "claude" => invoke_stdio("claude", &["-p", "--model", model], input),
-        "codex" => invoke_codex(input, model),
-        "openrouter" => invoke_openrouter(input, model),
+        "ollama" => invoke_stdio("ollama", &["run", model], input, chunk_timeout),
+        "claude" => invoke_stdio("claude", &["-p", "--model", model], input, chunk_timeout),
+        "codex" => invoke_codex(input, model, chunk_timeout),
+        "openrouter" => invoke_openrouter(input, model, chunk_timeout),
         _ => Err(InvocationError::new(
             FailureClass::Io,
             format!("Unknown provider: {provider} (supported: ollama, claude, codex, openrouter)"),
@@ -1018,7 +1311,12 @@ fn invoke_llm_once(input: &str, model: &str, provider: &str) -> Result<String, I
 ///
 /// Stderr is suppressed to avoid LLM progress output (e.g., Ollama token streaming)
 /// mixing with cassio's own progress reporting.
-fn invoke_stdio(cmd: &str, args: &[&str], input: &str) -> Result<String, InvocationError> {
+fn invoke_stdio(
+    cmd: &str,
+    args: &[&str],
+    input: &str,
+    chunk_timeout: Duration,
+) -> Result<String, InvocationError> {
     let mut child = std::process::Command::new(cmd)
         .args(args)
         .stdin(std::process::Stdio::piped())
@@ -1039,7 +1337,7 @@ fn invoke_stdio(cmd: &str, args: &[&str], input: &str) -> Result<String, Invocat
     }
     drop(child.stdin.take());
 
-    let output = wait_with_timeout(child, cmd)?;
+    let output = wait_with_timeout(child, cmd, chunk_timeout)?;
 
     if !output.status.success() {
         let stderr = truncate_for_error(&String::from_utf8_lossy(&output.stderr));
@@ -1060,7 +1358,11 @@ fn invoke_stdio(cmd: &str, args: &[&str], input: &str) -> Result<String, Invocat
 /// EDGE: If the process succeeds but the output file is missing or unreadable,
 /// this returns an error. The temp file name includes the process ID to avoid
 /// collisions when multiple cassio instances run simultaneously.
-fn invoke_codex(input: &str, model: &str) -> Result<String, InvocationError> {
+fn invoke_codex(
+    input: &str,
+    model: &str,
+    chunk_timeout: Duration,
+) -> Result<String, InvocationError> {
     let tmp = std::env::temp_dir().join(format!("cassio-codex-{}.md", std::process::id()));
     let tmp_str = tmp.to_string_lossy().to_string();
 
@@ -1084,7 +1386,7 @@ fn invoke_codex(input: &str, model: &str) -> Result<String, InvocationError> {
     }
     drop(child.stdin.take());
 
-    let output = wait_with_timeout(child, "codex")?;
+    let output = wait_with_timeout(child, "codex", chunk_timeout)?;
 
     if !output.status.success() {
         let _ = std::fs::remove_file(&tmp);
@@ -1110,7 +1412,11 @@ fn invoke_codex(input: &str, model: &str) -> Result<String, InvocationError> {
 ///
 /// Reads `OPENROUTER_API_KEY` from the environment. The model parameter is passed
 /// directly (e.g., `anthropic/claude-sonnet-4`, `google/gemini-2.5-pro`).
-fn invoke_openrouter(input: &str, model: &str) -> Result<String, InvocationError> {
+fn invoke_openrouter(
+    input: &str,
+    model: &str,
+    chunk_timeout: Duration,
+) -> Result<String, InvocationError> {
     let api_key = std::env::var("OPENROUTER_API_KEY").map_err(|_| {
         InvocationError::new(
             FailureClass::Io,
@@ -1126,25 +1432,33 @@ fn invoke_openrouter(input: &str, model: &str) -> Result<String, InvocationError
     });
 
     let agent: ureq::Agent = ureq::Agent::config_builder()
-        .timeout_global(Some(LLM_TIMEOUT))
-        .timeout_per_call(Some(LLM_TIMEOUT))
+        .timeout_global(Some(chunk_timeout))
+        .timeout_per_call(Some(chunk_timeout))
         .build()
         .into();
 
-    let response: serde_json::Value = agent
+    let raw_response = agent
         .post("https://openrouter.ai/api/v1/chat/completions")
         .header("Authorization", &format!("Bearer {api_key}"))
         .header("Content-Type", "application/json")
         .send_json(&body)
         .map_err(map_openrouter_error)?
         .body_mut()
-        .read_json()
+        .read_to_string()
         .map_err(|e| {
             InvocationError::new(
-                FailureClass::ResponseParse,
-                format!("OpenRouter response parse failed: {e}"),
+                FailureClass::Transport,
+                format!("OpenRouter response read failed: {e}"),
             )
         })?;
+
+    let response: serde_json::Value = serde_json::from_str(&raw_response).map_err(|e| {
+        InvocationError::new(
+            FailureClass::ParseError,
+            format!("OpenRouter response parse failed: {e}"),
+        )
+        .with_raw_response_body(raw_response.clone())
+    })?;
 
     // Extract the assistant message content from the chat completions response.
     let content = response
@@ -1157,17 +1471,18 @@ fn invoke_openrouter(input: &str, model: &str) -> Result<String, InvocationError
         .map(str::to_string)
         .ok_or_else(|| {
             InvocationError::new(
-                FailureClass::ResponseParse,
+                FailureClass::ParseError,
                 format!(
                     "OpenRouter response missing choices[0].message.content: {}",
                     truncate_for_error(&serde_json::to_string(&response).unwrap_or_default())
                 ),
             )
+            .with_raw_response_body(raw_response.clone())
         })?;
 
     if content.is_empty() {
         return Err(InvocationError::new(
-            FailureClass::EmptyOutput,
+            FailureClass::EmptyResponse,
             format!(
                 "OpenRouter returned empty response: {}",
                 truncate_for_error(&serde_json::to_string(&response).unwrap_or_default())
@@ -1178,8 +1493,12 @@ fn invoke_openrouter(input: &str, model: &str) -> Result<String, InvocationError
     Ok(content)
 }
 
-fn wait_with_timeout(mut child: Child, cmd: &str) -> Result<Output, InvocationError> {
-    match child.wait_timeout(LLM_TIMEOUT).map_err(|e| {
+fn wait_with_timeout(
+    mut child: Child,
+    cmd: &str,
+    chunk_timeout: Duration,
+) -> Result<Output, InvocationError> {
+    match child.wait_timeout(chunk_timeout).map_err(|e| {
         InvocationError::new(FailureClass::Io, format!("Failed to wait for {cmd}: {e}"))
     })? {
         Some(_) => child.wait_with_output().map_err(|e| {
@@ -1193,7 +1512,7 @@ fn wait_with_timeout(mut child: Child, cmd: &str) -> Result<Output, InvocationEr
             let _ = child.wait();
             Err(InvocationError::new(
                 FailureClass::Timeout,
-                format!("{cmd} exceeded {}s timeout", LLM_TIMEOUT.as_secs()),
+                format!("{cmd} exceeded {}s timeout", chunk_timeout.as_secs()),
             ))
         }
     }
@@ -1209,7 +1528,7 @@ fn map_openrouter_error(err: ureq::Error) -> InvocationError {
             ),
         ),
         ureq::Error::StatusCode(code) => InvocationError::new(
-            FailureClass::Transport,
+            FailureClass::ProviderHttpError,
             format!("OpenRouter returned HTTP {code}"),
         ),
         other => InvocationError::new(
@@ -1229,6 +1548,47 @@ fn truncate_for_error(input: &str) -> String {
         return trimmed.to_string();
     }
     format!("{}...", &trimmed[..LIMIT])
+}
+
+fn append_progress_event(path: &Path, event: &ProgressEvent<'_>) -> Result<(), CassioError> {
+    let parent = path.parent().ok_or_else(|| {
+        CassioError::Other(format!(
+            "Cannot determine parent directory for {}",
+            path.display()
+        ))
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+    let line = serde_json::to_string(event)
+        .map_err(|e| CassioError::Other(format!("Failed to serialize progress event: {e}")))?;
+    writeln!(file, "{line}")?;
+    Ok(())
+}
+
+fn progress_log_path(checkpoint_dir: &Path) -> PathBuf {
+    checkpoint_dir.join("progress.jsonl")
+}
+
+fn write_parse_failure_artifact(
+    checkpoint_dir: &Path,
+    phase: &str,
+    chunk_index: Option<usize>,
+    err: &InvocationError,
+) -> Result<(), CassioError> {
+    let Some(raw) = &err.raw_response_body else {
+        return Ok(());
+    };
+    let suffix = chunk_index
+        .map(|index| format!("chunk-{index:04}"))
+        .unwrap_or_else(|| "merge".to_string());
+    let path = checkpoint_dir.join(format!("{phase}-{suffix}.raw.txt"));
+    write_atomic(&path, raw)
+}
+
+fn day_status_err(day: &str) -> impl FnOnce(CassioError) -> DayFailure + '_ {
+    move |e| DayFailure {
+        detail: format!("{day}: failed to write checkpoint status: {e}"),
+    }
 }
 
 /// Format a duration as `Xm YYs` (for ≥60s) or `Xs`.
