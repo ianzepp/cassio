@@ -165,7 +165,11 @@ fn main() {
 
     if let Err(e) = run(cli) {
         eprintln!("Error: {e}");
-        std::process::exit(1);
+        let exit_code = match e {
+            CassioError::PartialRun { .. } => 2,
+            _ => 1,
+        };
+        std::process::exit(exit_code);
     }
 }
 
@@ -276,13 +280,21 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
 
                     // Step 2: transcripts → dailies
                     eprintln!("\n=== Step 2: Compacting dailies ===\n");
-                    cassio::compact::run_dailies(
+                    let daily_report = cassio::compact::run_dailies(
                         &output_dir,
                         &output_dir,
                         None,
                         &model,
                         &provider,
                     )?;
+
+                    if daily_report.failed > 0 {
+                        return Err(CassioError::PartialRun {
+                            operation: "cassio compact all",
+                            completed: daily_report.compacted,
+                            failed: daily_report.failed,
+                        });
+                    }
 
                     // Step 3: dailies → monthlies
                     eprintln!("\n=== Step 3: Compacting monthlies ===\n");
@@ -321,13 +333,20 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     if !cli.dry_run {
                         cassio::git::sync_before_writing(&output_dir, &config.git)?;
                     }
-                    cassio::compact::run_dailies(
+                    let daily_report = cassio::compact::run_dailies(
                         &input_dir,
                         &output_dir,
                         limit,
                         &model,
                         &provider,
                     )?;
+                    if daily_report.failed > 0 {
+                        return Err(CassioError::PartialRun {
+                            operation: "cassio compact dailies",
+                            completed: daily_report.compacted,
+                            failed: daily_report.failed,
+                        });
+                    }
                     cassio::git::auto_commit_and_push(
                         &output_dir,
                         &format!(

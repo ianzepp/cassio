@@ -282,6 +282,10 @@ finished: 2m25s, 2 compacted, 1 failed
 
 Output files are written as `YYYY-MM/YYYY-MM-DD.daily.md` in the output directory. Days that already have a `.daily.md` are skipped automatically.
 
+Chunked days are resumable. Cassio caches successful chunk summaries under `YYYY-MM/.cassio-checkpoints/YYYY-MM-DD/` and writes a machine-readable `status.json` there with the current phase, completed chunk count, and the last classified failure (`timeout`, `process`, `transport`, `response_parse`, `empty_output`, or `io`).
+
+Each provider call uses a 5 minute per-call timeout and up to 3 attempts with bounded backoff for transient failures. If a run finishes with one or more failed days, `cassio compact dailies` exits with code `2` so wrappers can distinguish partial completion from a clean run.
+
 The compaction prompt extracts:
 - **Session clusters** grouped by topic, with verbatim user quotes
 - **Decision points** and **corrections/pushbacks**
@@ -411,6 +415,11 @@ Options:
 ```
 
 If `-i` is omitted, falls back to `-o` or config `output`. If `-o` is omitted, falls back to config `output` or `-i`. Requires the selected provider CLI to be installed.
+
+Exit status:
+- `0` = all requested days compacted cleanly
+- `2` = run completed with partial failures
+- `1` = fatal setup or execution error
 
 ### cassio compact monthly
 
