@@ -509,12 +509,15 @@ fn run_stdin(format: OutputFormat, filter_dir: Option<&Path>) -> Result<(), Cass
         .cloned()
         .unwrap_or_default();
 
-    let session =
-        if first_line.contains("\"session_meta\"") || first_line.contains("\"response_item\"") {
-            cassio::parser::codex::CodexParser::parse_from_lines(lines.into_iter())?
-        } else {
-            cassio::parser::claude::ClaudeParser::parse_from_lines(lines.into_iter())?
-        };
+    let session = if first_line.contains("\"session_meta\"")
+        || first_line.contains("\"response_item\"")
+    {
+        cassio::parser::codex::CodexParser::parse_from_lines(lines.into_iter())?
+    } else if first_line.contains("\"type\":\"session\"") && first_line.contains("\"cwd\"") {
+        cassio::parser::pi::PiParser::parse_from_lines(lines.into_iter())?
+    } else {
+        cassio::parser::claude::ClaudeParser::parse_from_lines(lines.into_iter())?
+    };
 
     if let Some(filter) = filter_dir {
         let filter_str = filter.to_string_lossy();
@@ -570,7 +573,7 @@ fn run_stdin(format: OutputFormat, filter_dir: Option<&Path>) -> Result<(), Cass
 
 /// Process all session files in a directory, writing formatted output to `--output`.
 ///
-/// The directory is auto-detected for tool type (Claude, Codex, or OpenCode)
+/// The directory is auto-detected for tool type (Claude, Codex, OpenCode, or pi)
 /// based on its path. Files whose output is already newer than the input are
 /// skipped unless `--force` is set.
 fn run_batch_mode(
@@ -632,6 +635,7 @@ fn run_all_mode(cli: &Cli, config: &Config, format: OutputFormat) -> Result<(), 
         );
         eprintln!("  Codex:          ~/.codex/sessions");
         eprintln!("  OpenCode:       ~/.local/share/opencode/storage");
+        eprintln!("  pi:             ~/.pi/agent/sessions");
         return Err(CassioError::Other("No sources found".into()));
     }
 
@@ -733,6 +737,7 @@ fn process_file_list(
             Tool::Claude | Tool::ClaudeDesktop => Box::new(cassio::parser::claude::ClaudeParser),
             Tool::Codex => Box::new(cassio::parser::codex::CodexParser),
             Tool::OpenCode => Box::new(cassio::parser::opencode::OpenCodeParser),
+            Tool::Pi => Box::new(cassio::parser::pi::PiParser),
         };
 
         match parser.parse_export(path) {
@@ -936,5 +941,15 @@ mod tests {
         assert_eq!(filename, "ses_missing-opencode");
 
         fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_derive_output_path_for_pi_uses_filename_timestamp() {
+        let path = PathBuf::from(
+            "/sessions/2026-04-13T09-45-42-886Z_0c85082c-220c-4e56-8ae5-9463d6228494.jsonl",
+        );
+        let (folder, filename) = derive_output_stem_for(Tool::Pi, &path).unwrap();
+        assert_eq!(folder, "2026-04");
+        assert_eq!(filename, "2026-04-13T09-45-42-pi");
     }
 }

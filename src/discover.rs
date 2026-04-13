@@ -17,6 +17,7 @@
 //! - **Claude Code**: any `*.jsonl` file (excluding `.bak` variants)
 //! - **Codex**: only `rollout-*.jsonl` files (other `.jsonl` files are internal state)
 //! - **OpenCode**: session IDs are directories named `ses_*` under `message/`
+//! - **pi**: any `*.jsonl` file under `~/.pi/agent/sessions/`
 //!
 //! # TRADE-OFFS
 //!
@@ -51,6 +52,7 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
         }
         Tool::Codex => home.join(".codex/sessions"),
         Tool::OpenCode => home.join(".local/share/opencode/storage"),
+        Tool::Pi => home.join(".pi/agent/sessions"),
     };
     if path.exists() { Some(path) } else { None }
 }
@@ -65,6 +67,7 @@ pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
         Tool::ClaudeDesktop,
         Tool::Codex,
         Tool::OpenCode,
+        Tool::Pi,
     ];
     tools
         .iter()
@@ -87,6 +90,7 @@ pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<
         Tool::ClaudeDesktop,
         Tool::Codex,
         Tool::OpenCode,
+        Tool::Pi,
     ];
     tools
         .iter()
@@ -97,6 +101,7 @@ pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<
                 Tool::ClaudeDesktop => s.claude_desktop_path(),
                 Tool::Codex => s.codex_path(),
                 Tool::OpenCode => s.opencode_path(),
+                Tool::Pi => s.pi_path(),
             });
             let path = config_path
                 .filter(|p| p.exists())
@@ -126,6 +131,9 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
         Some(Tool::OpenCode) => {
             find_opencode_sessions(dir, &mut results);
         }
+        Some(Tool::Pi) => {
+            find_pi_files(dir, &mut results);
+        }
         None => {
             // Auto-detect based on directory content
             let dir_str = dir.to_string_lossy();
@@ -133,6 +141,8 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
                 find_codex_files(dir, &mut results);
             } else if dir_str.contains("opencode") {
                 find_opencode_sessions(dir, &mut results);
+            } else if dir_str.contains(".pi/agent/sessions") || dir_str.contains("/pi/agent/sessions") {
+                find_pi_files(dir, &mut results);
             } else if dir_str.contains("local-agent-mode-sessions") {
                 find_claude_files(dir, &mut results, Tool::ClaudeDesktop);
             } else {
@@ -198,6 +208,15 @@ fn find_opencode_sessions(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
     }
 }
 
+fn find_pi_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
+    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path.extension().is_some_and(|e| e == "jsonl") {
+            results.push((Tool::Pi, path.to_path_buf()));
+        }
+    }
+}
+
 /// Derive the output path `(year-month folder, filename)` for a session file.
 ///
 /// Used in batch mode to organize transcripts into `YYYY-MM/` subdirectories.
@@ -207,6 +226,7 @@ pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
     match tool {
         Tool::Claude | Tool::ClaudeDesktop => derive_claude_output_path(path),
         Tool::Codex => derive_codex_output_path(path),
+        Tool::Pi => derive_pi_output_path(path),
         Tool::OpenCode => {
             // For OpenCode we need the session data; use a placeholder
             ("unknown".to_string(), format!("unknown-{tool}.md"))
@@ -256,6 +276,21 @@ fn derive_codex_output_path(path: &Path) -> (String, String) {
         }
     }
     ("unknown".to_string(), "unknown-codex.md".to_string())
+}
+
+fn derive_pi_output_path(path: &Path) -> (String, String) {
+    let filename = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if filename.len() >= 19 {
+        let ts_part = &filename[..19];
+        if ts_part.as_bytes().get(4) == Some(&b'-')
+            && ts_part.as_bytes().get(7) == Some(&b'-')
+            && ts_part.as_bytes().get(10) == Some(&b'T')
+        {
+            let folder = &ts_part[..7];
+            return (folder.to_string(), format!("{ts_part}-pi.md"));
+        }
+    }
+    ("unknown".to_string(), "unknown-pi.md".to_string())
 }
 
 fn read_first_line(path: &Path) -> Result<String, std::io::Error> {
@@ -317,6 +352,32 @@ mod tests {
         let (folder, filename) = derive_output_path(Tool::OpenCode, &path);
         assert_eq!(folder, "unknown");
         assert!(filename.contains("opencode"));
+    }
+
+    #[test]
+    fn test_derive_pi_output_path_valid() {
+        let path = PathBuf::from(
+            "/sessions/2026-04-13T09-45-42-886Z_0c85082c-220c-4e56-8ae5-9463d6228494.jsonl",
+        );
+        let (folder, filename) = derive_pi_output_path(&path);
+        assert_eq!(folder, "2026-04");
+        assert_eq!(filename, "2026-04-13T09-45-42-pi.md");
+    }
+
+    #[test]
+    fn test_find_pi_files_collects_jsonl() {
+        let dir = temp_dir("discover-pi");
+        fs::create_dir_all(dir.join("nested")).unwrap();
+        fs::write(dir.join("nested").join("session.jsonl"), "{}\n").unwrap();
+        fs::write(dir.join("nested").join("ignore.txt"), "x").unwrap();
+
+        let mut results = Vec::new();
+        find_pi_files(&dir, &mut results);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, Tool::Pi);
+        assert!(results[0].1.ends_with("session.jsonl"));
+
+        fs::remove_dir_all(dir).ok();
     }
 
     #[test]

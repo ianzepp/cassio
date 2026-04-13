@@ -96,6 +96,7 @@ Cassio reads the native log format of each tool and normalizes everything into t
 | Claude Code | JSONL (one record per line) | `~/.claude/projects` |
 | OpenAI Codex | JSONL (`rollout-*.jsonl` files) | `~/.codex/sessions` |
 | OpenCode | Fragmented JSON (session/message/part dirs) | `~/.local/share/opencode/storage` |
+| pi | JSONL (one record per line) | `~/.pi/agent/sessions` |
 
 Format detection is automatic based on file paths and content.
 
@@ -205,6 +206,7 @@ push = true
 # claude = "~/.claude/projects"
 # codex = "~/.codex/sessions"
 # opencode = "~/.local/share/opencode/storage"
+# pi = "~/.pi/agent/sessions"
 ```
 
 CLI flags always override config values. With the config above, `cassio --all` just works without `-o`.
@@ -222,6 +224,7 @@ CLI flags always override config values. With the config above, `cassio --all` j
 | `sources.claude` | string | `~/.claude/projects` | Override Claude Code log path |
 | `sources.codex` | string | `~/.codex/sessions` | Override Codex log path |
 | `sources.opencode` | string | `~/.local/share/opencode/storage` | Override OpenCode log path |
+| `sources.pi` | string | `~/.pi/agent/sessions` | Override pi log path |
 
 ## Summary statistics
 
@@ -232,7 +235,7 @@ cassio summary -o ~/transcripts
 ```
 
 ```
-| Month | claude | codex | opencode | Total | Tokens | Duration |
+| Month | claude | codex | opencode | pi | Total | Tokens | Duration |
 |-------|--------|-------|----------|-------|--------|----------|
 | 2025-11 | 554 | 36 | 98 | 688 | 399.8M | 198h 30m |
 | 2025-12 | 1028 | 35 | 374 | 1437 | 32.1M | 331h 16m |
@@ -339,7 +342,7 @@ cassio compact all --model llama3.1
 
 This runs three steps in sequence:
 
-1. **Sessions**: discovers all tool sources (Claude, Codex, OpenCode) and converts new JSONL logs to `.md` transcripts
+1. **Sessions**: discovers all tool sources (Claude, Codex, OpenCode, pi) and converts new JSONL logs to `.md` transcripts
 2. **Dailies**: compacts pending days into `.daily.md` summaries
 3. **Monthlies**: synthesizes months that have compactions but no `.monthly.md` yet
 
@@ -348,7 +351,7 @@ Each step skips work that's already done, so it's safe to run repeatedly (e.g. v
 ```
 === Step 1: Processing sessions ===
 
-Found 3 source(s): claude, codex, opencode
+Found 4 source(s): claude, codex, opencode, pi
 ...
   Done: 14 processed, 99 skipped, 5005 up-to-date
 

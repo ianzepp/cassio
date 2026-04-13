@@ -30,6 +30,7 @@
 pub mod claude;
 pub mod codex;
 pub mod opencode;
+pub mod pi;
 
 use std::path::Path;
 
@@ -77,6 +78,10 @@ pub fn detect_parser(path: &Path) -> Result<Box<dyn Parser>, CassioError> {
         return Ok(Box::new(opencode::OpenCodeParser));
     }
 
+    if path_str.contains(".pi/agent/sessions") || path_str.contains("/pi/agent/sessions") {
+        return Ok(Box::new(pi::PiParser));
+    }
+
     // For .jsonl files, peek at first line to detect format
     if path.extension().is_some_and(|e| e == "jsonl") {
         let first_line = read_first_line(path)?;
@@ -85,6 +90,9 @@ pub fn detect_parser(path: &Path) -> Result<Box<dyn Parser>, CassioError> {
         }
         if first_line.contains("\"session_meta\"") || first_line.contains("\"response_item\"") {
             return Ok(Box::new(codex::CodexParser));
+        }
+        if first_line.contains("\"type\":\"session\"") && first_line.contains("\"cwd\"") {
+            return Ok(Box::new(pi::PiParser));
         }
     }
 
@@ -106,6 +114,8 @@ pub fn detect_parser_from_content(first_line: &str) -> Box<dyn Parser> {
         Box::new(claude::ClaudeParser)
     } else if first_line.contains("\"session_meta\"") || first_line.contains("\"response_item\"") {
         Box::new(codex::CodexParser)
+    } else if first_line.contains("\"type\":\"session\"") && first_line.contains("\"cwd\"") {
+        Box::new(pi::PiParser)
     } else {
         // Default to Claude
         Box::new(claude::ClaudeParser)

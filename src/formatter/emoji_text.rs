@@ -98,6 +98,7 @@ fn format_metadata(meta: &SessionMetadata, w: &mut dyn Write) -> Result<(), Cass
                 writeln!(w, "{EMOJI_META} Title: {title}")?;
             }
         }
+        Tool::Pi => {}
     }
 
     if let Some(ref branch) = meta.git_branch {

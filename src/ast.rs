@@ -50,6 +50,7 @@ pub enum Tool {
     ClaudeDesktop,
     Codex,
     OpenCode,
+    Pi,
 }
 
 impl std::fmt::Display for Tool {
@@ -60,6 +61,7 @@ impl std::fmt::Display for Tool {
             Tool::ClaudeDesktop => write!(f, "claude"),
             Tool::Codex => write!(f, "codex"),
             Tool::OpenCode => write!(f, "opencode"),
+            Tool::Pi => write!(f, "pi"),
         }
     }
 }
@@ -306,6 +308,7 @@ mod tests {
         assert_eq!(Tool::Claude.to_string(), "claude");
         assert_eq!(Tool::Codex.to_string(), "codex");
         assert_eq!(Tool::OpenCode.to_string(), "opencode");
+        assert_eq!(Tool::Pi.to_string(), "pi");
     }
 
     #[test]

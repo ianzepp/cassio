@@ -60,6 +60,7 @@ pub struct SourcesConfig {
     pub claude_desktop: Option<String>,
     pub codex: Option<String>,
     pub opencode: Option<String>,
+    pub pi: Option<String>,
 }
 
 /// Top-level config deserialized from `~/.config/cassio/config.toml`.
@@ -257,6 +258,7 @@ pub fn init() -> Result<(), CassioError> {
 # claude_desktop = "~/Library/Application Support/Claude/local-agent-mode-sessions"
 # codex = "~/.codex/sessions"
 # opencode = "~/.local/share/opencode/storage"
+# pi = "~/.pi/agent/sessions"
 "#;
 
     if let Some(parent) = path.parent() {
@@ -454,6 +456,11 @@ impl SourcesConfig {
     pub fn opencode_path(&self) -> Option<PathBuf> {
         self.opencode.as_deref().map(expand_tilde)
     }
+
+    /// Resolve the configured pi source path, expanding `~`.
+    pub fn pi_path(&self) -> Option<PathBuf> {
+        self.pi.as_deref().map(expand_tilde)
+    }
 }
 
 /// Expand a leading `~` or `~/` prefix to the user's home directory.
@@ -587,6 +594,7 @@ push = false
 
 [sources]
 claude = "~/.claude/projects"
+pi = "~/.pi/agent/sessions"
 "#;
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.output.as_deref(), Some("~/transcripts"));
@@ -596,6 +604,10 @@ claude = "~/.claude/projects"
         assert_eq!(
             config.sources.as_ref().unwrap().claude.as_deref(),
             Some("~/.claude/projects")
+        );
+        assert_eq!(
+            config.sources.as_ref().unwrap().pi.as_deref(),
+            Some("~/.pi/agent/sessions")
         );
     }
 
