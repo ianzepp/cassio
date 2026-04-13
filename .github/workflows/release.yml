@@ -50,10 +50,10 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             cassio-aarch64-apple-darwin/cassio-aarch64-apple-darwin.tar.gz
@@ -67,7 +67,7 @@ jobs:
 
     steps:
       - name: Download artifacts
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
 
       - name: Compute SHA256 checksums
         id: sha
@@ -90,18 +90,22 @@ jobs:
             license "MIT"
 
             on_macos do
-              if Hardware::CPU.arm?
+              on_arm do
                 url "https://github.com/ianzepp/cassio/releases/download/${{ github.ref_name }}/cassio-aarch64-apple-darwin.tar.gz"
                 sha256 "${{ steps.sha.outputs.arm64 }}"
-              else
+              end
+
+              on_intel do
                 url "https://github.com/ianzepp/cassio/releases/download/${{ github.ref_name }}/cassio-x86_64-apple-darwin.tar.gz"
                 sha256 "${{ steps.sha.outputs.x86_64 }}"
               end
             end
 
             on_linux do
-              url "https://github.com/ianzepp/cassio/releases/download/${{ github.ref_name }}/cassio-x86_64-unknown-linux-gnu.tar.gz"
-              sha256 "${{ steps.sha.outputs.linux_x86_64 }}"
+              on_intel do
+                url "https://github.com/ianzepp/cassio/releases/download/${{ github.ref_name }}/cassio-x86_64-unknown-linux-gnu.tar.gz"
+                sha256 "${{ steps.sha.outputs.linux_x86_64 }}"
+              end
             end
 
             def install
