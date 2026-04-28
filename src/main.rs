@@ -509,15 +509,14 @@ fn run_stdin(format: OutputFormat, filter_dir: Option<&Path>) -> Result<(), Cass
         .cloned()
         .unwrap_or_default();
 
-    let session = if first_line.contains("\"session_meta\"")
-        || first_line.contains("\"response_item\"")
-    {
-        cassio::parser::codex::CodexParser::parse_from_lines(lines.into_iter())?
-    } else if first_line.contains("\"type\":\"session\"") && first_line.contains("\"cwd\"") {
-        cassio::parser::pi::PiParser::parse_from_lines(lines.into_iter())?
-    } else {
-        cassio::parser::claude::ClaudeParser::parse_from_lines(lines.into_iter())?
-    };
+    let session =
+        if first_line.contains("\"session_meta\"") || first_line.contains("\"response_item\"") {
+            cassio::parser::codex::CodexParser::parse_from_lines(lines.into_iter())?
+        } else if first_line.contains("\"type\":\"session\"") && first_line.contains("\"cwd\"") {
+            cassio::parser::pi::PiParser::parse_from_lines(lines.into_iter())?
+        } else {
+            cassio::parser::claude::ClaudeParser::parse_from_lines(lines.into_iter())?
+        };
 
     if let Some(filter) = filter_dir {
         let filter_str = filter.to_string_lossy();

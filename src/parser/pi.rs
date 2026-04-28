@@ -123,7 +123,10 @@ fn parse_lines<I: Iterator<Item = String>>(
                 });
             }
             "model_change" => {
-                let provider = record.get("provider").and_then(|v| v.as_str()).unwrap_or("");
+                let provider = record
+                    .get("provider")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("");
                 let model_id = record.get("modelId").and_then(|v| v.as_str()).unwrap_or("");
                 let model = combine_model(provider, model_id);
                 if model.is_empty() || current_model.as_deref() == Some(model.as_str()) {
@@ -236,10 +239,14 @@ fn parse_lines<I: Iterator<Item = String>>(
 
                         if let Some(content) = message.get("content").and_then(|v| v.as_array()) {
                             for block in content {
-                                let block_type = block.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                                let block_type =
+                                    block.get("type").and_then(|v| v.as_str()).unwrap_or("");
                                 match block_type {
                                     "text" => {
-                                        let text = block.get("text").and_then(|v| v.as_str()).unwrap_or("");
+                                        let text = block
+                                            .get("text")
+                                            .and_then(|v| v.as_str())
+                                            .unwrap_or("");
                                         sequence += 1;
                                         training_events.push(TrainingEvent {
                                             event_id: next_event_id(sequence),
@@ -256,7 +263,9 @@ fn parse_lines<I: Iterator<Item = String>>(
                                             tool_input_sanitized: None,
                                             tool_output_raw: None,
                                             tool_output_sanitized: None,
-                                            usage: usage.as_ref().map(crate::training::event_usage_from_tokens),
+                                            usage: usage
+                                                .as_ref()
+                                                .map(crate::training::event_usage_from_tokens),
                                             source_record_refs: vec![source_ref.clone()],
                                         });
                                         let trimmed = text.trim();
@@ -310,7 +319,8 @@ fn parse_lines<I: Iterator<Item = String>>(
                                             .get("arguments")
                                             .cloned()
                                             .unwrap_or_else(|| Value::Object(Default::default()));
-                                        pending_tools.insert(id.clone(), (name.clone(), input.clone()));
+                                        pending_tools
+                                            .insert(id.clone(), (name.clone(), input.clone()));
                                         blocks.push(ContentBlock::ToolUse {
                                             id: id.clone(),
                                             name: name.clone(),
@@ -484,7 +494,10 @@ fn parse_usage(value: &Value) -> TokenUsage {
         input_tokens: value.get("input").and_then(|v| v.as_u64()).unwrap_or(0),
         output_tokens: value.get("output").and_then(|v| v.as_u64()).unwrap_or(0),
         cache_read_tokens: value.get("cacheRead").and_then(|v| v.as_u64()).unwrap_or(0),
-        cache_creation_tokens: value.get("cacheWrite").and_then(|v| v.as_u64()).unwrap_or(0),
+        cache_creation_tokens: value
+            .get("cacheWrite")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0),
     }
 }
 
@@ -628,7 +641,10 @@ mod tests {
         assert_eq!(session.metadata.tool, Tool::Pi);
         assert_eq!(session.metadata.session_id, "pi-1");
         assert_eq!(session.metadata.project_path, "/proj");
-        assert_eq!(session.metadata.model.as_deref(), Some("openrouter/openai/gpt-5.4"));
+        assert_eq!(
+            session.metadata.model.as_deref(),
+            Some("openrouter/openai/gpt-5.4")
+        );
         assert_eq!(session.stats.user_messages, 1);
         assert_eq!(session.stats.assistant_messages, 1);
         assert_eq!(session.stats.total_tokens.input_tokens, 10);

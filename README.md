@@ -217,7 +217,7 @@ CLI flags always override config values. With the config above, `cassio --all` j
 |-----|------|---------|-------------|
 | `output` | string | *(none)* | Default output directory |
 | `format` | string | `emoji-text` | Default output format (`emoji-text`, `jsonl`, or `training-json`) |
-| `provider` | string | `ollama` | LLM provider for compaction (`ollama`, `claude`, or `codex`) |
+| `provider` | string | `ollama` | LLM provider for compaction (`ollama`, `claude`, `codex`, or `openrouter`) |
 | `model` | string | `llama3.1` | Default model name (passed to the selected provider) |
 | `git.commit` | bool | `false` | Auto-commit output files after processing |
 | `git.push` | bool | `false` | Auto-push after committing |
@@ -258,7 +258,7 @@ cassio summary --detailed -o ~/transcripts
 
 ## Daily compaction
 
-Cassio can compact a day's worth of session transcripts into a structured daily summary using a local or cloud LLM. Supported providers are **ollama** (default), **claude**, and **codex**. The compaction preserves every user utterance, compresses LLM behavior to one-liners, marks decision points and corrections, and extracts lessons learned.
+Cassio can compact a day's worth of session transcripts into a structured daily summary using a local or cloud LLM. Supported providers are **ollama** (default), **claude**, **codex**, and **openrouter**. The compaction preserves every user utterance, compresses LLM behavior to one-liners, marks decision points and corrections, and extracts lessons learned.
 
 ```sh
 # Compact all pending days (input and output in same directory)
@@ -471,7 +471,7 @@ cargo build --release
 ```
 Input (JSONL/JSON) → Parser → AST (Session) → Formatter → Output (txt/jsonl)
                                                               ↓
-                                              Extract → Ollama → Daily compaction (md)
+                                               Extract → LLM provider → Daily compaction (md)
 ```
 
-The AST layer cleanly separates parsing from formatting, making it straightforward to add new input parsers or output formatters. The compaction pipeline operates on formatted output, extracting key signals and sending them through Ollama for structured summarization.
+The AST layer cleanly separates parsing from formatting, making it straightforward to add new input parsers or output formatters. The compaction pipeline operates on formatted output, extracting key signals and sending them through the selected LLM provider for structured summarization.

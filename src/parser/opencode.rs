@@ -581,7 +581,7 @@ fn parse_session(
                                 summary: truncated,
                             });
                             sequence += 1;
-                            let raw_output = serde_json::to_value(&serde_json::json!({
+                            let raw_output = serde_json::to_value(serde_json::json!({
                                 "status": state.status,
                                 "title": state.title,
                                 "metadata": state.metadata.as_ref().map(|meta| serde_json::json!({

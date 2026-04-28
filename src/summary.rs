@@ -128,10 +128,8 @@ fn collect_stats(dir: &Path) -> Result<Vec<TranscriptStats>, CassioError> {
 fn parse_session_filename(name: &str) -> Option<(String, String)> {
     let stem = if let Some(stem) = name.strip_suffix(".md") {
         stem
-    } else if let Some(stem) = name.strip_suffix(".txt") {
-        stem
     } else {
-        return None;
+        name.strip_suffix(".txt")?
     };
 
     if stem.len() < 15 {
@@ -145,9 +143,7 @@ fn parse_session_filename(name: &str) -> Option<(String, String)> {
 
     let tool_name = stem.rsplit('-').next()?;
     match tool_name {
-        "claude" | "codex" | "opencode" | "pi" => {
-            Some((date.to_string(), tool_name.to_string()))
-        }
+        "claude" | "codex" | "opencode" | "pi" => Some((date.to_string(), tool_name.to_string())),
         _ => None,
     }
 }

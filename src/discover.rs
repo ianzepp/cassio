@@ -141,7 +141,9 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
                 find_codex_files(dir, &mut results);
             } else if dir_str.contains("opencode") {
                 find_opencode_sessions(dir, &mut results);
-            } else if dir_str.contains(".pi/agent/sessions") || dir_str.contains("/pi/agent/sessions") {
+            } else if dir_str.contains(".pi/agent/sessions")
+                || dir_str.contains("/pi/agent/sessions")
+            {
                 find_pi_files(dir, &mut results);
             } else if dir_str.contains("local-agent-mode-sessions") {
                 find_claude_files(dir, &mut results, Tool::ClaudeDesktop);
