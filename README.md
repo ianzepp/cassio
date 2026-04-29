@@ -422,12 +422,16 @@ cassio search "launchd rsync rollback" -o ~/transcripts
 cassio search "skill-author" --month 2026-04
 cassio search "Permissions could not be resolved" --summaries-only
 cassio search "session_id|source_path" --regex --include-training --json
+cassio search "portfolio.service.ts" --include-paths
 ```
 
 Literal queries are split on whitespace and ANDed on each line, so
 `cassio search "launchd rsync rollback"` finds lines containing all three terms
 without requiring that exact phrase. Use `--regex` for regular-expression
-matching. The command uses config `output` when `-o` is omitted.
+matching. By default, path-heavy tool lines and markdown link targets are ignored
+for matching so terms from `/Users/...`, `/Volumes/...`, or tool path arguments
+do not drown out conversation hits. Use `--include-paths` when searching for
+file names or path text. The command uses config `output` when `-o` is omitted.
 
 ```
 cassio search [OPTIONS] <QUERY>
@@ -437,6 +441,7 @@ Options:
   -l, --limit <N>             Maximum matches to print [default: 50]
       --summaries-only        Search only monthly and daily summary files
       --include-training      Include *.training.json after markdown hits
+      --include-paths         Let file paths and tool path arguments satisfy query terms
       --regex                 Treat query as a regular expression
       --case-sensitive        Use case-sensitive matching
       --json                  Emit JSON instead of text

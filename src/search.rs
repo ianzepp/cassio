@@ -13,6 +13,7 @@ pub struct SearchOptions {
     pub limit: usize,
     pub summaries_only: bool,
     pub include_training: bool,
+    pub include_paths: bool,
     pub json: bool,
     pub regex: bool,
     pub case_sensitive: bool,
@@ -127,7 +128,7 @@ pub fn search(
 
     for artifact in artifact_order(options) {
         for path in files_for_artifact(&target, artifact) {
-            search_file(&path, artifact, &matcher, options.limit, &mut hits)?;
+            search_file(&path, artifact, &matcher, options, &mut hits)?;
             if hits.len() >= options.limit {
                 return Ok(hits);
             }
@@ -200,12 +201,17 @@ fn search_file(
     path: &Path,
     artifact: SearchArtifact,
     matcher: &Matcher,
-    limit: usize,
+    options: &SearchOptions,
     hits: &mut Vec<SearchHit>,
 ) -> Result<(), CassioError> {
     let content = fs::read_to_string(path)?;
     for (index, line) in content.lines().enumerate() {
-        if !matcher.is_match(line) {
+        let searchable = if options.include_paths {
+            line.to_string()
+        } else {
+            strip_path_noise(line)
+        };
+        if !matcher.is_match(&searchable) {
             continue;
         }
         hits.push(SearchHit {
@@ -214,7 +220,7 @@ fn search_file(
             line: index + 1,
             text: truncate_line(line.trim(), 280),
         });
-        if hits.len() >= limit {
+        if hits.len() >= options.limit {
             break;
         }
     }
@@ -259,6 +265,86 @@ fn normalize_term(term: &str) -> String {
     term.to_lowercase()
 }
 
+fn strip_path_noise(line: &str) -> String {
+    let without_markdown_targets = strip_markdown_link_targets(line);
+    let mut scrubbed = String::with_capacity(without_markdown_targets.len());
+    for token in without_markdown_targets.split_whitespace() {
+        if looks_like_path_token(token) {
+            continue;
+        }
+        if !scrubbed.is_empty() {
+            scrubbed.push(' ');
+        }
+        scrubbed.push_str(&strip_embedded_paths(token));
+    }
+    scrubbed
+}
+
+fn strip_markdown_link_targets(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(start) = rest.find("](") {
+        let (before, after_start) = rest.split_at(start);
+        out.push_str(before);
+        let after_start = &after_start[2..];
+        if let Some(end) = after_start.find(')') {
+            rest = &after_start[end + 1..];
+        } else {
+            out.push_str("](");
+            rest = after_start;
+            break;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+fn looks_like_path_token(token: &str) -> bool {
+    let trimmed = token.trim_matches(path_boundary_char);
+    trimmed.starts_with('/')
+        || trimmed.starts_with("~/")
+        || trimmed.starts_with("./")
+        || trimmed.starts_with("../")
+}
+
+fn strip_embedded_paths(token: &str) -> String {
+    let mut out = token.to_string();
+    for marker in [
+        "/Users/",
+        "/Volumes/",
+        "/var/",
+        "/tmp/",
+        "/opt/",
+        "/usr/",
+        "~/",
+        "./",
+        "../",
+    ] {
+        while let Some(start) = out.find(marker) {
+            let end = out[start..]
+                .find(path_terminal_char)
+                .map(|offset| start + offset)
+                .unwrap_or(out.len());
+            out.replace_range(start..end, "");
+        }
+    }
+    out
+}
+
+fn path_boundary_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '"' | '\'' | '`' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';' | ':'
+    )
+}
+
+fn path_terminal_char(ch: char) -> bool {
+    matches!(
+        ch,
+        '"' | '\'' | '`' | '<' | '>' | '(' | ')' | '[' | ']' | '{' | '}' | ',' | ';'
+    ) || ch.is_whitespace()
+}
+
 fn truncate_line(line: &str, max_chars: usize) -> String {
     let mut chars = line.chars();
     let mut out: String = chars.by_ref().take(max_chars).collect();
@@ -277,6 +363,78 @@ mod tests {
         let matcher = Matcher::new("Skill Author", false, false).unwrap();
         assert!(matcher.is_match("updated the skill-author workflow"));
         assert!(!matcher.is_match("updated the skill workflow"));
+    }
+
+    fn test_options() -> SearchOptions {
+        SearchOptions {
+            month: None,
+            limit: 50,
+            summaries_only: false,
+            include_training: false,
+            include_paths: false,
+            json: false,
+            regex: false,
+            case_sensitive: false,
+        }
+    }
+
+    #[test]
+    fn default_search_ignores_absolute_path_terms() {
+        let matcher = Matcher::new("zepp holdings", false, false).unwrap();
+        let line = r#"✅ Read: file="/Users/ianzepp/github/gauntlet/ghostfolio/get_holdings.json""#;
+        assert!(!matcher.is_match(&strip_path_noise(line)));
+        assert!(matcher.is_match("👤 should I use Zepp Equity or Zepp Holdings as the name?"));
+    }
+
+    #[test]
+    fn include_paths_preserves_old_raw_line_matching() {
+        let matcher = Matcher::new("zepp holdings", false, false).unwrap();
+        let line = r#"✅ Read: file="/Users/ianzepp/github/gauntlet/ghostfolio/get_holdings.json""#;
+        assert!(matcher.is_match(line));
+    }
+
+    #[test]
+    fn search_uses_path_scrubbed_lines_by_default() {
+        let root = std::env::temp_dir().join(format!("cassio_search_test_{}", std::process::id()));
+        let month_dir = root.join("2026-04");
+        std::fs::create_dir_all(&month_dir).unwrap();
+        let path = month_dir.join("2026-04-24T14-24-33-codex.md");
+        std::fs::write(
+            &path,
+            r#"✅ Read: file="/Users/ianzepp/github/gauntlet/ghostfolio/get_holdings.json"
+👤 should I use Zepp Equity or Zepp Holdings as the name?
+"#,
+        )
+        .unwrap();
+
+        let hits = search(&root, "zepp holdings", &test_options()).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, 2);
+
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn include_paths_allows_path_matches() {
+        let root =
+            std::env::temp_dir().join(format!("cassio_search_paths_test_{}", std::process::id()));
+        let month_dir = root.join("2026-04");
+        std::fs::create_dir_all(&month_dir).unwrap();
+        let path = month_dir.join("2026-04-24T14-24-33-codex.md");
+        std::fs::write(
+            &path,
+            r#"✅ Read: file="/Users/ianzepp/github/gauntlet/ghostfolio/get_holdings.json"
+"#,
+        )
+        .unwrap();
+
+        let mut options = test_options();
+        options.include_paths = true;
+        let hits = search(&root, "zepp holdings", &options).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, 1);
+
+        std::fs::remove_dir_all(&root).ok();
     }
 
     #[test]

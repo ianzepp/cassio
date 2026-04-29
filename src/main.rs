@@ -129,6 +129,9 @@ enum Command {
         /// Include noisy *.training.json files after markdown hits
         #[arg(long)]
         include_training: bool,
+        /// Let file paths and tool path arguments satisfy query terms
+        #[arg(long)]
+        include_paths: bool,
         /// Treat query as a regular expression instead of literal terms
         #[arg(long)]
         regex: bool,
@@ -265,6 +268,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             limit,
             summaries_only,
             include_training,
+            include_paths,
             regex,
             case_sensitive,
             json,
@@ -288,6 +292,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 limit,
                 summaries_only,
                 include_training,
+                include_paths,
                 json,
                 regex,
                 case_sensitive,
