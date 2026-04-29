@@ -8,5 +8,6 @@ pub mod git;
 pub mod parser;
 pub mod pricing;
 pub mod redact;
+pub mod search;
 pub mod summary;
 pub mod training;

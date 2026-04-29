@@ -113,6 +113,32 @@ enum Command {
         #[arg(long)]
         daily: bool,
     },
+    /// Search transcript outputs with summary-first ranking
+    Search {
+        /// Search query. Literal terms are ANDed by default.
+        query: String,
+        /// Restrict search to one YYYY-MM month directory
+        #[arg(short, long)]
+        month: Option<String>,
+        /// Maximum number of matches to print
+        #[arg(short, long, default_value_t = 50)]
+        limit: usize,
+        /// Search only monthly and daily summary files
+        #[arg(long)]
+        summaries_only: bool,
+        /// Include noisy *.training.json files after markdown hits
+        #[arg(long)]
+        include_training: bool,
+        /// Treat query as a regular expression instead of literal terms
+        #[arg(long)]
+        regex: bool,
+        /// Use case-sensitive matching
+        #[arg(long)]
+        case_sensitive: bool,
+        /// Emit JSON instead of text
+        #[arg(long)]
+        json: bool,
+    },
     /// Compact transcripts into daily/monthly analysis
     Compact {
         #[command(subcommand)]
@@ -223,6 +249,41 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     )
                 })?;
             return cassio::summary::run_summary(&dir, detailed, daily);
+        }
+        Some(Command::Search {
+            query,
+            month,
+            limit,
+            summaries_only,
+            include_training,
+            regex,
+            case_sensitive,
+            json,
+        }) => {
+            let config = if cli.detached {
+                Config::default()
+            } else {
+                Config::load()
+            };
+            let dir = cli
+                .output
+                .clone()
+                .or_else(|| config.output_path())
+                .ok_or_else(|| {
+                    CassioError::Other(
+                        "--output is required (or set via `cassio set output <path>`)".into(),
+                    )
+                })?;
+            let options = cassio::search::SearchOptions {
+                month,
+                limit,
+                summaries_only,
+                include_training,
+                json,
+                regex,
+                case_sensitive,
+            };
+            return cassio::search::run_search(&dir, &query, options);
         }
         Some(Command::Compact { action }) => {
             let config = if cli.detached {

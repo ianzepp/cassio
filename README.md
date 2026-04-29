@@ -378,6 +378,7 @@ cassio [OPTIONS] [PATH] [COMMAND]
 Commands:
   init     Create a default config file
   summary  Show summary statistics for transcripts
+  search   Search transcript outputs with summary-first ranking
   compact  Compact transcripts into daily/monthly analysis
   get      Get a config value (e.g. cassio get output)
   set      Set a config value (e.g. cassio set git.commit true)
@@ -405,6 +406,38 @@ Options:
 ```
 
 Regular mode shows a month × tool session count table with token and duration totals. `--detailed` shows a per-project breakdown with message counts, tool usage, and token spend.
+
+## Search
+
+Use Cassio search when plain `grep` or `rg` is too unstructured. It searches
+Cassio's generated artifacts in retrieval order: monthly summaries, daily
+compactions, session transcripts, and optionally training JSON metadata.
+
+```sh
+cassio search "launchd rsync rollback" -o ~/transcripts
+cassio search "skill-author" --month 2026-04
+cassio search "Permissions could not be resolved" --summaries-only
+cassio search "session_id|source_path" --regex --include-training --json
+```
+
+Literal queries are split on whitespace and ANDed on each line, so
+`cassio search "launchd rsync rollback"` finds lines containing all three terms
+without requiring that exact phrase. Use `--regex` for regular-expression
+matching. The command uses config `output` when `-o` is omitted.
+
+```
+cassio search [OPTIONS] <QUERY>
+
+Options:
+  -m, --month <YYYY-MM>       Restrict search to one month directory
+  -l, --limit <N>             Maximum matches to print [default: 50]
+      --summaries-only        Search only monthly and daily summary files
+      --include-training      Include *.training.json after markdown hits
+      --regex                 Treat query as a regular expression
+      --case-sensitive        Use case-sensitive matching
+      --json                  Emit JSON instead of text
+  -o, --output <DIR>          Directory containing transcript files
+```
 
 ### cassio compact dailies
 
