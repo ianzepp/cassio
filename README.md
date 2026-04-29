@@ -217,8 +217,9 @@ CLI flags always override config values. With the config above, `cassio --all` j
 |-----|------|---------|-------------|
 | `output` | string | *(none)* | Default output directory |
 | `format` | string | `emoji-text` | Default output format (`emoji-text`, `jsonl`, or `training-json`) |
-| `provider` | string | `ollama` | LLM provider for compaction (`ollama`, `claude`, `codex`, or `openrouter`) |
 | `model` | string | `llama3.1` | Default model name (passed to the selected provider) |
+| `provider` | string | `ollama` | LLM provider for compaction (`ollama`, `claude`, `codex`, `openrouter`, or `openai`) |
+| `base_url` | string | *(none)* | Base URL for `provider = "openai"`, such as a local llama.cpp `/v1` endpoint |
 | `git.commit` | bool | `false` | Auto-commit output files after processing |
 | `git.push` | bool | `false` | Auto-push after committing |
 | `sources.claude` | string | `~/.claude/projects` | Override Claude Code log path |
@@ -258,7 +259,7 @@ cassio summary --detailed -o ~/transcripts
 
 ## Daily compaction
 
-Cassio can compact a day's worth of session transcripts into a structured daily summary using a local or cloud LLM. Supported providers are **ollama** (default), **claude**, **codex**, and **openrouter**. The compaction preserves every user utterance, compresses LLM behavior to one-liners, marks decision points and corrections, and extracts lessons learned.
+Cassio can compact a day's worth of session transcripts into a structured daily summary using a local or cloud LLM. Supported providers are **ollama** (default), **claude**, **codex**, **openrouter**, and **openai** for local or self-hosted OpenAI-compatible endpoints such as llama.cpp. The compaction preserves every user utterance, compresses LLM behavior to one-liners, marks decision points and corrections, and extracts lessons learned.
 
 ```sh
 # Compact all pending days (input and output in same directory)
@@ -272,6 +273,9 @@ cassio compact dailies -i ~/transcripts --limit 3 --model llama3.1
 
 # Use Claude instead of Ollama
 cassio compact dailies -i ~/transcripts --provider claude --model sonnet
+
+# Use a local llama.cpp server with its OpenAI-compatible endpoint
+cassio compact dailies -i ~/transcripts --provider openai --base-url http://127.0.0.1:18173/v1 --model local
 ```
 
 Progress is reported per day:
@@ -448,13 +452,14 @@ Options:
   -i, --input <DIR>    Input directory containing session transcripts
   -l, --limit <N>      Maximum number of days to process
   -m, --model <MODEL>     Model name passed to the selected provider
-  -p, --provider <NAME>  LLM provider: ollama, claude, codex, or openrouter
+  -p, --provider <NAME>  LLM provider: ollama, claude, codex, openrouter, or openai
+      --base-url <URL>   Base URL for provider=openai, such as http://127.0.0.1:18173/v1
       --chunk-timeout <SECONDS>  Per-call timeout for each chunk or merge request [default: 300]
       --max-retries <N>          Maximum retries for each chunk or merge request [default: 3]
   -o, --output <DIR>      Output directory for compaction files
 ```
 
-If `-i` is omitted, falls back to `-o` or config `output`. If `-o` is omitted, falls back to config `output` or `-i`. Requires the selected provider CLI to be installed. Resume is the default behavior whenever checkpoint state already exists on disk.
+If `-i` is omitted, falls back to `-o` or config `output`. If `-o` is omitted, falls back to config `output` or `-i`. CLI providers require the selected provider CLI to be installed. The `openai` provider requires `base_url` and calls `/chat/completions` directly, appending that path to the base URL when needed. Resume is the default behavior whenever checkpoint state already exists on disk.
 
 Exit status:
 - `0` = all requested days compacted cleanly
@@ -469,7 +474,8 @@ cassio compact monthly [OPTIONS] --input <YYYY-MM>
 Options:
   -i, --input <YYYY-MM>  Month to process (e.g. 2025-12)
   -m, --model <MODEL>     Model name passed to the selected provider
-  -p, --provider <NAME>  LLM provider: ollama, claude, codex, or openrouter
+  -p, --provider <NAME>  LLM provider: ollama, claude, codex, openrouter, or openai
+      --base-url <URL>   Base URL for provider=openai, such as http://127.0.0.1:18173/v1
   -o, --output <DIR>      Directory containing month subdirectories
 ```
 
@@ -482,13 +488,14 @@ cassio compact all [OPTIONS]
 
 Options:
   -m, --model <MODEL>     Model name passed to the selected provider
-  -p, --provider <NAME>  LLM provider: ollama, claude, codex, or openrouter
+  -p, --provider <NAME>  LLM provider: ollama, claude, codex, openrouter, or openai
+      --base-url <URL>   Base URL for provider=openai, such as http://127.0.0.1:18173/v1
       --chunk-timeout <SECONDS>  Per-call timeout for each chunk or merge request [default: 300]
       --max-retries <N>          Maximum retries for each chunk or merge request [default: 3]
   -o, --output <DIR>      Directory for transcripts, dailies, and monthlies
 ```
 
-Runs the full pipeline: sessions → dailies → monthlies. Requires the selected provider CLI to be installed. Each step skips already-processed items.
+Runs the full pipeline: sessions → dailies → monthlies. CLI providers require the selected provider CLI to be installed. The `openai` provider calls an OpenAI-compatible `/chat/completions` endpoint configured by `base_url`. Each step skips already-processed items.
 
 ## Install
 

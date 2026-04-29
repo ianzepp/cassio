@@ -30,11 +30,13 @@
 //!
 //! # LLM provider abstraction
 //!
-//! Four providers are supported:
+//! Providers supported:
 //! - **ollama** — `ollama run <model>` (stdin/stdout)
 //! - **claude** — `claude -p --model <model>` (stdin/stdout)
 //! - **codex** — `codex exec -m <model> -o <tmpfile>` (stdin + output file)
 //! - **openrouter** — direct HTTPS call using `OPENROUTER_API_KEY`
+//! - **openai** — OpenAI-compatible chat-completions endpoint configured by
+//!   `base_url`, including local llama.cpp servers
 //!
 //! WHY mostly external CLIs rather than API calls: cassio avoids bespoke auth flows
 //! where possible. `openrouter` is the exception because it provides a stable
@@ -229,6 +231,7 @@ pub fn run_dailies(
     limit: Option<usize>,
     model: &str,
     provider: &str,
+    base_url: Option<&str>,
     options: &CompactOptions,
 ) -> Result<DailyRunReport, CassioError> {
     let pending = find_pending_days(input_dir, output_dir)?;
@@ -258,7 +261,9 @@ pub fn run_dailies(
         let relative = format!("{month}/{day}");
         eprint!("dailies: [{} of {total}] {relative}...", i + 1);
 
-        match compact_day(output_dir, day, month, files, model, provider, options) {
+        match compact_day(
+            output_dir, day, month, files, model, provider, base_url, options,
+        ) {
             Ok(()) => {
                 eprintln!(" ok");
                 compacted += 1;
@@ -301,6 +306,7 @@ pub fn run_monthly(
     month: &str,
     model: &str,
     provider: &str,
+    base_url: Option<&str>,
 ) -> Result<(), CassioError> {
     let options = CompactOptions::default();
 
@@ -369,6 +375,7 @@ pub fn run_monthly(
             &input,
             model,
             provider,
+            base_url,
             &options,
             InvocationContext {
                 checkpoint_dir: &month_dir,
@@ -409,6 +416,7 @@ pub fn run_monthly(
                 &input,
                 model,
                 provider,
+                base_url,
                 &options,
                 InvocationContext {
                     checkpoint_dir: &month_dir,
@@ -441,6 +449,7 @@ pub fn run_monthly(
             &merge_input,
             model,
             provider,
+            base_url,
             &options,
             InvocationContext {
                 checkpoint_dir: &month_dir,
@@ -474,7 +483,12 @@ pub fn run_monthly(
 ///
 /// Scans `dir` for `YYYY-MM/` subdirectories that contain `.daily.md` files
 /// but no `.monthly.md`, then calls `run_monthly` for each in chronological order.
-pub fn run_pending_monthlies(dir: &Path, model: &str, provider: &str) -> Result<(), CassioError> {
+pub fn run_pending_monthlies(
+    dir: &Path,
+    model: &str,
+    provider: &str,
+    base_url: Option<&str>,
+) -> Result<(), CassioError> {
     let pending = find_pending_months(dir)?;
 
     if pending.is_empty() {
@@ -489,7 +503,7 @@ pub fn run_pending_monthlies(dir: &Path, model: &str, provider: &str) -> Result<
     );
 
     for month in &pending {
-        run_monthly(dir, month, model, provider)?;
+        run_monthly(dir, month, model, provider, base_url)?;
     }
 
     Ok(())
@@ -596,6 +610,7 @@ fn compact_day(
     files: &[PathBuf],
     model: &str,
     provider: &str,
+    base_url: Option<&str>,
     options: &CompactOptions,
 ) -> Result<(), DayFailure> {
     let mut sessions = Vec::new();
@@ -651,7 +666,7 @@ fn compact_day(
                 chunk_index: Some(1),
                 total_chunks: 1,
             };
-            match invoke_llm(&input, model, provider, options, context) {
+            match invoke_llm(&input, model, provider, base_url, options, context) {
                 Ok(output) => output,
                 Err(err) => {
                     let _ = write_parse_failure_artifact(&checkpoint_dir, "single", Some(1), &err);
@@ -730,7 +745,14 @@ fn compact_day(
                         chunk_index: Some(i + 1),
                         total_chunks: chunk_inputs.len(),
                     };
-                    let output = match invoke_llm(chunk_input, model, provider, options, context) {
+                    let output = match invoke_llm(
+                        chunk_input,
+                        model,
+                        provider,
+                        base_url,
+                        options,
+                        context,
+                    ) {
                         Ok(output) => output,
                         Err(err) => {
                             let _ = write_parse_failure_artifact(
@@ -856,7 +878,7 @@ fn compact_day(
                 chunk_index: None,
                 total_chunks: chunk_inputs.len(),
             };
-            match invoke_llm(&merge_input, model, provider, options, context) {
+            match invoke_llm(&merge_input, model, provider, base_url, options, context) {
                 Ok(output) => output,
                 Err(err) => {
                     let _ = write_parse_failure_artifact(&checkpoint_dir, "merge", None, &err);
@@ -1222,6 +1244,7 @@ fn invoke_llm(
     input: &str,
     model: &str,
     provider: &str,
+    base_url: Option<&str>,
     options: &CompactOptions,
     context: InvocationContext<'_>,
 ) -> Result<String, InvocationError> {
@@ -1229,7 +1252,7 @@ fn invoke_llm(
 
     for attempt in 1..=options.max_retries {
         let started = Instant::now();
-        match invoke_llm_once(input, model, provider, options.chunk_timeout) {
+        match invoke_llm_once(input, model, provider, base_url, options.chunk_timeout) {
             Ok(output) => {
                 let _ = append_progress_event(
                     &progress_log_path(context.checkpoint_dir),
@@ -1293,6 +1316,7 @@ fn invoke_llm_once(
     input: &str,
     model: &str,
     provider: &str,
+    base_url: Option<&str>,
     chunk_timeout: Duration,
 ) -> Result<String, InvocationError> {
     match provider {
@@ -1300,9 +1324,12 @@ fn invoke_llm_once(
         "claude" => invoke_stdio("claude", &["-p", "--model", model], input, chunk_timeout),
         "codex" => invoke_codex(input, model, chunk_timeout),
         "openrouter" => invoke_openrouter(input, model, chunk_timeout),
+        "openai" => invoke_openai_compatible(input, model, base_url, chunk_timeout),
         _ => Err(InvocationError::new(
             FailureClass::Io,
-            format!("Unknown provider: {provider} (supported: ollama, claude, codex, openrouter)"),
+            format!(
+                "Unknown provider: {provider} (supported: ollama, claude, codex, openrouter, openai)"
+            ),
         )),
     }
 }
@@ -1424,6 +1451,62 @@ fn invoke_openrouter(
         )
     })?;
 
+    invoke_chat_completions(
+        "OpenRouter",
+        "https://openrouter.ai/api/v1/chat/completions",
+        Some(&api_key),
+        input,
+        model,
+        chunk_timeout,
+    )
+}
+
+/// Call a local or self-hosted OpenAI-compatible chat-completions endpoint.
+///
+/// `base_url` may be either a base URL such as `http://127.0.0.1:18173/v1` or
+/// the full `/chat/completions` endpoint. If `OPENAI_API_KEY` is set, cassio
+/// sends it as a bearer token; local llama.cpp servers typically do not require one.
+fn invoke_openai_compatible(
+    input: &str,
+    model: &str,
+    base_url: Option<&str>,
+    chunk_timeout: Duration,
+) -> Result<String, InvocationError> {
+    let base_url = base_url.ok_or_else(|| {
+        InvocationError::new(
+            FailureClass::Io,
+            "provider=openai requires base_url (set `base_url` in config or pass `--base-url`)",
+        )
+    })?;
+    let endpoint = chat_completions_endpoint(base_url);
+    let api_key = std::env::var("OPENAI_API_KEY").ok();
+    invoke_chat_completions(
+        "OpenAI-compatible provider",
+        &endpoint,
+        api_key.as_deref(),
+        input,
+        model,
+        chunk_timeout,
+    )
+}
+
+fn chat_completions_endpoint(provider: &str) -> String {
+    let trimmed = provider.trim_end_matches('/');
+    if trimmed.ends_with("/chat/completions") {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}/chat/completions")
+    }
+}
+
+fn invoke_chat_completions(
+    label: &str,
+    endpoint: &str,
+    bearer_token: Option<&str>,
+    input: &str,
+    model: &str,
+    chunk_timeout: Duration,
+) -> Result<String, InvocationError> {
     let body = serde_json::json!({
         "model": model,
         "messages": [
@@ -1437,25 +1520,31 @@ fn invoke_openrouter(
         .build()
         .into();
 
-    let raw_response = agent
-        .post("https://openrouter.ai/api/v1/chat/completions")
-        .header("Authorization", &format!("Bearer {api_key}"))
-        .header("Content-Type", "application/json")
+    let mut request = agent
+        .post(endpoint)
+        .header("Content-Type", "application/json");
+    let auth_header;
+    if let Some(token) = bearer_token {
+        auth_header = format!("Bearer {token}");
+        request = request.header("Authorization", &auth_header);
+    }
+
+    let raw_response = request
         .send_json(&body)
-        .map_err(map_openrouter_error)?
+        .map_err(|err| map_chat_completions_error(label, err, chunk_timeout))?
         .body_mut()
         .read_to_string()
         .map_err(|e| {
             InvocationError::new(
                 FailureClass::Transport,
-                format!("OpenRouter response read failed: {e}"),
+                format!("{label} response read failed: {e}"),
             )
         })?;
 
     let response: serde_json::Value = serde_json::from_str(&raw_response).map_err(|e| {
         InvocationError::new(
             FailureClass::ParseError,
-            format!("OpenRouter response parse failed: {e}"),
+            format!("{label} response parse failed: {e}"),
         )
         .with_raw_response_body(raw_response.clone())
     })?;
@@ -1473,7 +1562,7 @@ fn invoke_openrouter(
             InvocationError::new(
                 FailureClass::ParseError,
                 format!(
-                    "OpenRouter response missing choices[0].message.content: {}",
+                    "{label} response missing choices[0].message.content: {}",
                     truncate_for_error(&serde_json::to_string(&response).unwrap_or_default())
                 ),
             )
@@ -1484,7 +1573,7 @@ fn invoke_openrouter(
         return Err(InvocationError::new(
             FailureClass::EmptyResponse,
             format!(
-                "OpenRouter returned empty response: {}",
+                "{label} returned empty response: {}",
                 truncate_for_error(&serde_json::to_string(&response).unwrap_or_default())
             ),
         ));
@@ -1518,22 +1607,26 @@ fn wait_with_timeout(
     }
 }
 
-fn map_openrouter_error(err: ureq::Error) -> InvocationError {
+fn map_chat_completions_error(
+    label: &str,
+    err: ureq::Error,
+    chunk_timeout: Duration,
+) -> InvocationError {
     match err {
         ureq::Error::Timeout(_) => InvocationError::new(
             FailureClass::Timeout,
             format!(
-                "OpenRouter request timed out after {}s",
-                LLM_TIMEOUT.as_secs()
+                "{label} request timed out after {}s",
+                chunk_timeout.as_secs()
             ),
         ),
         ureq::Error::StatusCode(code) => InvocationError::new(
             FailureClass::ProviderHttpError,
-            format!("OpenRouter returned HTTP {code}"),
+            format!("{label} returned HTTP {code}"),
         ),
         other => InvocationError::new(
             FailureClass::Transport,
-            format!("OpenRouter request failed: {other}"),
+            format!("{label} request failed: {other}"),
         ),
     }
 }
@@ -1803,5 +1896,35 @@ seventh line that should be cut
         );
 
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn test_chat_completions_endpoint_normalizes_base_url() {
+        assert_eq!(
+            chat_completions_endpoint("http://127.0.0.1:18173/v1"),
+            "http://127.0.0.1:18173/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_endpoint("http://127.0.0.1:18173/v1/"),
+            "http://127.0.0.1:18173/v1/chat/completions"
+        );
+        assert_eq!(
+            chat_completions_endpoint("http://127.0.0.1:18173/v1/chat/completions"),
+            "http://127.0.0.1:18173/v1/chat/completions"
+        );
+    }
+
+    #[test]
+    fn test_openai_provider_requires_base_url() {
+        let err = invoke_llm_once(
+            "hello",
+            "local",
+            "openai",
+            None,
+            std::time::Duration::from_secs(1),
+        )
+        .unwrap_err();
+        assert_eq!(err.class, FailureClass::Io);
+        assert!(err.detail.contains("requires base_url"));
     }
 }

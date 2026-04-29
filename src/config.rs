@@ -77,8 +77,11 @@ pub struct Config {
     pub format: Option<String>,
     /// Default model name passed to the LLM provider during compaction.
     pub model: Option<String>,
-    /// LLM provider for compaction: `"ollama"`, `"claude"`, `"codex"`, or `"openrouter"`.
+    /// LLM provider for compaction: `"ollama"`, `"claude"`, `"codex"`,
+    /// `"openrouter"`, or `"openai"`.
     pub provider: Option<String>,
+    /// Base URL for the `"openai"` provider, such as a local llama.cpp `/v1` endpoint.
+    pub base_url: Option<String>,
     #[serde(default)]
     pub git: GitConfig,
     pub sources: Option<SourcesConfig>,
@@ -239,8 +242,11 @@ pub fn init() -> Result<(), CassioError> {
 # Default output format: "emoji-text", "jsonl", or "training-json"
 # format = "emoji-text"
 
-# LLM provider for compaction: "ollama", "claude", "codex", or "openrouter"
+# LLM provider for compaction: "ollama", "claude", "codex", "openrouter", or "openai"
 # provider = "ollama"
+
+# Base URL for provider = "openai" (for example, local llama.cpp)
+# base_url = "http://127.0.0.1:18173/v1"
 
 # Default model name (passed to the selected provider)
 # model = "llama3.1"
@@ -587,6 +593,8 @@ mod tests {
         let toml_str = r#"
 output = "~/transcripts"
 format = "emoji-text"
+provider = "openai"
+base_url = "http://127.0.0.1:18173/v1"
 
 [git]
 commit = true
@@ -599,6 +607,11 @@ pi = "~/.pi/agent/sessions"
         let config: Config = toml::from_str(toml_str).unwrap();
         assert_eq!(config.output.as_deref(), Some("~/transcripts"));
         assert_eq!(config.format.as_deref(), Some("emoji-text"));
+        assert_eq!(config.provider.as_deref(), Some("openai"));
+        assert_eq!(
+            config.base_url.as_deref(),
+            Some("http://127.0.0.1:18173/v1")
+        );
         assert!(config.git.commit);
         assert!(!config.git.push);
         assert_eq!(

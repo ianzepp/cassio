@@ -153,9 +153,12 @@ enum CompactAction {
         /// Model name passed to the selected provider
         #[arg(short, long)]
         model: Option<String>,
-        /// LLM provider: ollama, claude, codex, or openrouter
+        /// LLM provider: ollama, claude, codex, openrouter, or openai
         #[arg(short, long)]
         provider: Option<String>,
+        /// Base URL for provider=openai, such as http://127.0.0.1:18173/v1
+        #[arg(long)]
+        base_url: Option<String>,
         /// Per-call timeout for each chunk or merge request, in seconds
         #[arg(long, default_value_t = 300)]
         chunk_timeout: u64,
@@ -174,9 +177,12 @@ enum CompactAction {
         /// Model name passed to the selected provider
         #[arg(short, long)]
         model: Option<String>,
-        /// LLM provider: ollama, claude, codex, or openrouter
+        /// LLM provider: ollama, claude, codex, openrouter, or openai
         #[arg(short, long)]
         provider: Option<String>,
+        /// Base URL for provider=openai, such as http://127.0.0.1:18173/v1
+        #[arg(long)]
+        base_url: Option<String>,
         /// Per-call timeout for each chunk or merge request, in seconds
         #[arg(long, default_value_t = 300)]
         chunk_timeout: u64,
@@ -192,9 +198,12 @@ enum CompactAction {
         /// Model name passed to the selected provider
         #[arg(short, long)]
         model: Option<String>,
-        /// LLM provider: ollama, claude, codex, or openrouter
+        /// LLM provider: ollama, claude, codex, openrouter, or openai
         #[arg(short, long)]
         provider: Option<String>,
+        /// Base URL for provider=openai, such as http://127.0.0.1:18173/v1
+        #[arg(long)]
+        base_url: Option<String>,
     },
 }
 
@@ -300,15 +309,18 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 .provider
                 .clone()
                 .unwrap_or_else(|| "ollama".to_string());
+            let default_base_url = config.base_url.clone();
             match action {
                 CompactAction::All {
                     model,
                     provider,
+                    base_url,
                     chunk_timeout,
                     max_retries,
                 } => {
                     let model = model.unwrap_or_else(|| default_model.clone());
                     let provider = provider.unwrap_or_else(|| default_provider.clone());
+                    let base_url = base_url.or_else(|| default_base_url.clone());
                     let compact_options =
                         cassio::compact::CompactOptions::new(chunk_timeout, max_retries);
                     let output_dir = cli
@@ -366,6 +378,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         None,
                         &model,
                         &provider,
+                        base_url.as_deref(),
                         &compact_options,
                     )?;
 
@@ -380,7 +393,12 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
 
                     // Step 3: dailies → monthlies
                     eprintln!("\n=== Step 3: Compacting monthlies ===\n");
-                    cassio::compact::run_pending_monthlies(&output_dir, &model, &provider)?;
+                    cassio::compact::run_pending_monthlies(
+                        &output_dir,
+                        &model,
+                        &provider,
+                        base_url.as_deref(),
+                    )?;
 
                     cassio::git::auto_commit_and_push(
                         &output_dir,
@@ -395,11 +413,13 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     limit,
                     model,
                     provider,
+                    base_url,
                     chunk_timeout,
                     max_retries,
                 } => {
                     let model = model.unwrap_or_else(|| default_model.clone());
                     let provider = provider.unwrap_or_else(|| default_provider.clone());
+                    let base_url = base_url.or_else(|| default_base_url.clone());
                     let compact_options =
                         cassio::compact::CompactOptions::new(chunk_timeout, max_retries);
                     let input_dir = input
@@ -425,6 +445,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         limit,
                         &model,
                         &provider,
+                        base_url.as_deref(),
                         &compact_options,
                     )?;
                     if daily_report.failed > 0 {
@@ -449,9 +470,11 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     input,
                     model,
                     provider,
+                    base_url,
                 } => {
                     let model = model.unwrap_or(default_model);
                     let provider = provider.unwrap_or(default_provider);
+                    let base_url = base_url.or(default_base_url);
                     let dir = cli
                         .output
                         .clone()
@@ -463,7 +486,13 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                             )
                         })?;
                     cassio::git::sync_before_writing(&dir, &config.git)?;
-                    cassio::compact::run_monthly(&dir, &input, &model, &provider)?;
+                    cassio::compact::run_monthly(
+                        &dir,
+                        &input,
+                        &model,
+                        &provider,
+                        base_url.as_deref(),
+                    )?;
                     cassio::git::auto_commit_and_push(
                         &dir,
                         &format!("cassio compact monthly {input}"),
