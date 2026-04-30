@@ -198,6 +198,7 @@ output = "~/transcripts"
 format = "jsonl"
 
 [embedding]
+auto_index = true
 provider = "ollama"
 model = "cassio-embedding"
 base_url = "http://127.0.0.1:11434"
@@ -225,9 +226,14 @@ CLI flags always override config values. With the config above, `cassio --all` j
 | `model` | string | `llama3.1` | Default model name (passed to the selected provider) |
 | `provider` | string | `ollama` | LLM provider for compaction (`ollama`, `claude`, `codex`, `openrouter`, or `openai`) |
 | `base_url` | string | *(none)* | Base URL for `provider = "openai"`, such as a local llama.cpp `/v1` endpoint |
+| `embedding.auto_index` | bool | `false` | Update the semantic index after transcript generation |
 | `embedding.provider` | string | `ollama` | Embedding provider for `cassio index` |
 | `embedding.model` | string | `cassio-embedding` | Embedding model name |
 | `embedding.base_url` | string | `http://127.0.0.1:11434` | Embedding provider base URL |
+| `embedding.include_training` | bool | `false` | Include training JSON metadata in automatic indexing |
+| `embedding.include_paths` | bool | `false` | Let path-heavy tool lines influence automatic indexing |
+| `embedding.batch_size` | integer | `16` | Number of chunks per embedding request |
+| `embedding.timeout_secs` | integer | `120` | Per-request embedding timeout |
 | `git.commit` | bool | `false` | Auto-commit output files after processing |
 | `git.push` | bool | `false` | Auto-push after committing |
 | `sources.claude` | string | `~/.claude/projects` | Override Claude Code log path |
@@ -468,6 +474,16 @@ cassio index -o ~/transcripts
 cassio index --month 2026-04
 cassio index --include-training --batch-size 8
 ```
+
+To keep the semantic index fresh during normal transcript generation, enable
+automatic indexing:
+
+```sh
+cassio set embedding.auto_index true
+```
+
+With that enabled, `cassio --all` and batch/compact output runs update the index
+after writing transcript artifacts and before any configured git auto-commit.
 
 By default, Cassio indexes monthly summaries, daily compactions, and session
 transcripts. Training JSON metadata is excluded unless `--include-training` is

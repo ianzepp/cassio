@@ -163,11 +163,11 @@ enum Command {
         #[arg(long)]
         base_url: Option<String>,
         /// Number of chunks to embed per provider request
-        #[arg(long, default_value_t = 16)]
-        batch_size: usize,
+        #[arg(long)]
+        batch_size: Option<usize>,
         /// Per-request embedding timeout, in seconds
-        #[arg(long, default_value_t = 120)]
-        timeout: u64,
+        #[arg(long)]
+        timeout: Option<u64>,
     },
     /// Compact transcripts into daily/monthly analysis
     Compact {
@@ -351,22 +351,22 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     )
                 })?;
             let embedding = config.embedding.as_ref();
-            let options = cassio::index::IndexOptions {
+            let options = index_options_from_config(
+                embedding,
                 month,
                 include_training,
                 include_paths,
-                provider: provider
-                    .or_else(|| embedding.and_then(|cfg| cfg.provider.clone()))
-                    .unwrap_or_else(|| "ollama".to_string()),
-                model: model
-                    .or_else(|| embedding.and_then(|cfg| cfg.model.clone()))
-                    .unwrap_or_else(|| "cassio-embedding".to_string()),
-                base_url: base_url
-                    .or_else(|| embedding.and_then(|cfg| cfg.base_url.clone()))
-                    .unwrap_or_else(|| "http://127.0.0.1:11434".to_string()),
                 batch_size,
-                timeout_secs: timeout,
-            };
+                timeout,
+                provider,
+                model,
+                base_url,
+            );
+            if cli.dry_run {
+                println!("cassio index: dry run, no index written");
+                println!("Output: {}", dir.display());
+                return Ok(());
+            }
             return cassio::index::run_index(&dir, options);
         }
         Some(Command::Compact { action }) => {
@@ -475,6 +475,8 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         base_url.as_deref(),
                     )?;
 
+                    maybe_auto_index(&output_dir, &config, cli.dry_run)?;
+
                     cassio::git::auto_commit_and_push(
                         &output_dir,
                         &format!("cassio compact all ({})", Local::now().format("%Y-%m-%d")),
@@ -531,6 +533,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                             details: daily_report.failed_details.join("; "),
                         });
                     }
+                    maybe_auto_index(&output_dir, &config, cli.dry_run)?;
                     cassio::git::auto_commit_and_push(
                         &output_dir,
                         &format!(
@@ -568,6 +571,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         &provider,
                         base_url.as_deref(),
                     )?;
+                    maybe_auto_index(&dir, &config, cli.dry_run)?;
                     cassio::git::auto_commit_and_push(
                         &dir,
                         &format!("cassio compact monthly {input}"),
@@ -618,6 +622,73 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
         ))),
         None => run_stdin(format, cli.filter_dir.as_deref()),
     }
+}
+
+fn index_options_from_config(
+    embedding: Option<&cassio::config::EmbeddingConfig>,
+    month: Option<String>,
+    include_training: bool,
+    include_paths: bool,
+    batch_size: Option<usize>,
+    timeout_secs: Option<u64>,
+    provider: Option<String>,
+    model: Option<String>,
+    base_url: Option<String>,
+) -> cassio::index::IndexOptions {
+    let defaults = cassio::index::IndexOptions::default();
+    cassio::index::IndexOptions {
+        month,
+        include_training: include_training
+            || embedding
+                .map(|cfg| cfg.include_training)
+                .unwrap_or(defaults.include_training),
+        include_paths: include_paths
+            || embedding
+                .map(|cfg| cfg.include_paths)
+                .unwrap_or(defaults.include_paths),
+        provider: provider
+            .or_else(|| embedding.and_then(|cfg| cfg.provider.clone()))
+            .unwrap_or(defaults.provider),
+        model: model
+            .or_else(|| embedding.and_then(|cfg| cfg.model.clone()))
+            .unwrap_or(defaults.model),
+        base_url: base_url
+            .or_else(|| embedding.and_then(|cfg| cfg.base_url.clone()))
+            .unwrap_or(defaults.base_url),
+        batch_size: batch_size
+            .or_else(|| embedding.and_then(|cfg| cfg.batch_size))
+            .unwrap_or(defaults.batch_size),
+        timeout_secs: timeout_secs
+            .or_else(|| embedding.and_then(|cfg| cfg.timeout_secs))
+            .unwrap_or(defaults.timeout_secs),
+    }
+}
+
+fn maybe_auto_index(output_dir: &Path, config: &Config, dry_run: bool) -> Result<(), CassioError> {
+    let Some(embedding) = config.embedding.as_ref() else {
+        return Ok(());
+    };
+    if !embedding.auto_index {
+        return Ok(());
+    }
+    if dry_run {
+        eprintln!("index: dry run, skipping automatic semantic index update");
+        return Ok(());
+    }
+
+    eprintln!("\n=== Updating semantic index ===\n");
+    let options = index_options_from_config(
+        Some(embedding),
+        None,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    cassio::index::run_index(output_dir, options)
 }
 
 /// Parse and format a single session file, writing output to stdout.
@@ -769,6 +840,7 @@ fn run_batch_mode(
     )?;
 
     if !cli.dry_run {
+        maybe_auto_index(output_dir, config, cli.dry_run)?;
         cassio::git::auto_commit_and_push(
             output_dir,
             &format!("cassio batch ({})", Local::now().format("%Y-%m-%d")),
@@ -832,6 +904,7 @@ fn run_all_mode(cli: &Cli, config: &Config, format: OutputFormat) -> Result<(), 
     }
 
     if !cli.dry_run {
+        maybe_auto_index(output_dir, config, cli.dry_run)?;
         cassio::git::auto_commit_and_push(
             output_dir,
             &format!("cassio --all ({})", Local::now().format("%Y-%m-%d")),
@@ -1066,6 +1139,40 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("cassio-{name}-{unique}"))
+    }
+
+    #[test]
+    fn index_options_from_config_uses_embedding_defaults() {
+        let embedding = cassio::config::EmbeddingConfig {
+            auto_index: true,
+            provider: Some("ollama".to_string()),
+            model: Some("cassio-embedding".to_string()),
+            base_url: Some("http://127.0.0.1:11434".to_string()),
+            include_training: true,
+            include_paths: true,
+            batch_size: Some(4),
+            timeout_secs: Some(45),
+        };
+        let options = index_options_from_config(
+            Some(&embedding),
+            Some("2026-04".to_string()),
+            false,
+            false,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(options.month.as_deref(), Some("2026-04"));
+        assert!(options.include_training);
+        assert!(options.include_paths);
+        assert_eq!(options.provider, "ollama");
+        assert_eq!(options.model, "cassio-embedding");
+        assert_eq!(options.base_url, "http://127.0.0.1:11434");
+        assert_eq!(options.batch_size, 4);
+        assert_eq!(options.timeout_secs, 45);
     }
 
     #[test]

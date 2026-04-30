@@ -66,12 +66,25 @@ pub struct SourcesConfig {
 /// Embedding provider options used by `cassio index`.
 #[derive(Debug, Default, Deserialize)]
 pub struct EmbeddingConfig {
+    /// Update the semantic index after transcript generation completes.
+    #[serde(default)]
+    pub auto_index: bool,
     /// Embedding provider. Currently only `"ollama"` is supported.
     pub provider: Option<String>,
     /// Embedding model name passed to the provider.
     pub model: Option<String>,
     /// Provider base URL, such as an Ollama server at `http://127.0.0.1:11434`.
     pub base_url: Option<String>,
+    /// Include training JSON metadata in automatic index updates.
+    #[serde(default)]
+    pub include_training: bool,
+    /// Include raw path-heavy tool lines in automatic index updates.
+    #[serde(default)]
+    pub include_paths: bool,
+    /// Number of chunks per embedding provider request.
+    pub batch_size: Option<usize>,
+    /// Per-request embedding timeout, in seconds.
+    pub timeout_secs: Option<u64>,
 }
 
 /// Top-level config deserialized from `~/.config/cassio/config.toml`.
@@ -265,6 +278,9 @@ pub fn init() -> Result<(), CassioError> {
 # model = "llama3.1"
 
 [embedding]
+# Update the semantic index after transcript generation completes
+# auto_index = false
+
 # Provider for `cassio index`; currently only "ollama" is supported
 # provider = "ollama"
 
@@ -273,6 +289,12 @@ pub fn init() -> Result<(), CassioError> {
 
 # Ollama base URL
 # base_url = "http://127.0.0.1:11434"
+
+# Optional automatic-indexing behavior
+# include_training = false
+# include_paths = false
+# batch_size = 16
+# timeout_secs = 120
 
 [git]
 # Auto-commit output files after processing
@@ -619,6 +641,16 @@ format = "emoji-text"
 provider = "openai"
 base_url = "http://127.0.0.1:18173/v1"
 
+[embedding]
+auto_index = true
+provider = "ollama"
+model = "cassio-embedding"
+base_url = "http://127.0.0.1:11434"
+include_training = true
+include_paths = false
+batch_size = 8
+timeout_secs = 30
+
 [git]
 commit = true
 push = false
@@ -635,6 +667,18 @@ pi = "~/.pi/agent/sessions"
             config.base_url.as_deref(),
             Some("http://127.0.0.1:18173/v1")
         );
+        let embedding = config.embedding.as_ref().unwrap();
+        assert!(embedding.auto_index);
+        assert_eq!(embedding.provider.as_deref(), Some("ollama"));
+        assert_eq!(embedding.model.as_deref(), Some("cassio-embedding"));
+        assert_eq!(
+            embedding.base_url.as_deref(),
+            Some("http://127.0.0.1:11434")
+        );
+        assert!(embedding.include_training);
+        assert!(!embedding.include_paths);
+        assert_eq!(embedding.batch_size, Some(8));
+        assert_eq!(embedding.timeout_secs, Some(30));
         assert!(config.git.commit);
         assert!(!config.git.push);
         assert_eq!(
