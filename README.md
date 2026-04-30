@@ -197,6 +197,11 @@ The resulting config file:
 output = "~/transcripts"
 format = "jsonl"
 
+[embedding]
+provider = "ollama"
+model = "cassio-embedding"
+base_url = "http://127.0.0.1:11434"
+
 [git]
 commit = true
 push = true
@@ -220,6 +225,9 @@ CLI flags always override config values. With the config above, `cassio --all` j
 | `model` | string | `llama3.1` | Default model name (passed to the selected provider) |
 | `provider` | string | `ollama` | LLM provider for compaction (`ollama`, `claude`, `codex`, `openrouter`, or `openai`) |
 | `base_url` | string | *(none)* | Base URL for `provider = "openai"`, such as a local llama.cpp `/v1` endpoint |
+| `embedding.provider` | string | `ollama` | Embedding provider for `cassio index` |
+| `embedding.model` | string | `cassio-embedding` | Embedding model name |
+| `embedding.base_url` | string | `http://127.0.0.1:11434` | Embedding provider base URL |
 | `git.commit` | bool | `false` | Auto-commit output files after processing |
 | `git.push` | bool | `false` | Auto-push after committing |
 | `sources.claude` | string | `~/.claude/projects` | Override Claude Code log path |
@@ -383,6 +391,7 @@ Commands:
   init     Create a default config file
   summary  Show summary statistics for transcripts
   search   Search transcript outputs with summary-first ranking
+  index    Build a semantic embedding index for transcript outputs
   compact  Compact transcripts into daily/monthly analysis
   get      Get a config value (e.g. cassio get output)
   set      Set a config value (e.g. cassio set git.commit true)
@@ -445,6 +454,43 @@ Options:
       --regex                 Treat query as a regular expression
       --case-sensitive        Use case-sensitive matching
       --json                  Emit JSON instead of text
+  -o, --output <DIR>          Directory containing transcript files
+```
+
+## Index
+
+Use Cassio index to build a local semantic embedding index for transcript
+artifacts. The first implementation supports Ollama's embedding API and defaults
+to the `cassio-embedding` model alias.
+
+```sh
+cassio index -o ~/transcripts
+cassio index --month 2026-04
+cassio index --include-training --batch-size 8
+```
+
+By default, Cassio indexes monthly summaries, daily compactions, and session
+transcripts. Training JSON metadata is excluded unless `--include-training` is
+set. Path-heavy tool lines and markdown link targets are scrubbed before
+embedding so filesystem paths do not dominate the semantic space; use
+`--include-paths` to index raw path text.
+
+The index is written under `.cassio/index/` inside the transcript output
+directory and is scoped by embedding provider and model name. Re-running the
+command reuses unchanged chunks and embeds only changed chunks.
+
+```
+cassio index [OPTIONS]
+
+Options:
+  -m, --month <YYYY-MM>       Restrict indexing to one month directory
+      --include-training      Include noisy *.training.json files after markdown artifacts
+      --include-paths         Let file paths and tool path arguments influence embedding text
+      --provider <PROVIDER>   Embedding provider; currently only ollama is supported
+      --model <MODEL>         Embedding model name [default: cassio-embedding]
+      --base-url <URL>        Embedding provider base URL [default: http://127.0.0.1:11434]
+      --batch-size <N>        Number of chunks to embed per provider request [default: 16]
+      --timeout <SECONDS>     Per-request embedding timeout, in seconds [default: 120]
   -o, --output <DIR>          Directory containing transcript files
 ```
 

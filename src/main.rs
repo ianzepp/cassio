@@ -142,6 +142,33 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Build a semantic embedding index for transcript outputs
+    Index {
+        /// Restrict indexing to one YYYY-MM month directory
+        #[arg(short, long)]
+        month: Option<String>,
+        /// Include noisy *.training.json files after markdown artifacts
+        #[arg(long)]
+        include_training: bool,
+        /// Let file paths and tool path arguments influence embedding text
+        #[arg(long)]
+        include_paths: bool,
+        /// Embedding provider; currently only ollama is supported
+        #[arg(long)]
+        provider: Option<String>,
+        /// Embedding model name
+        #[arg(long)]
+        model: Option<String>,
+        /// Embedding provider base URL
+        #[arg(long)]
+        base_url: Option<String>,
+        /// Number of chunks to embed per provider request
+        #[arg(long, default_value_t = 16)]
+        batch_size: usize,
+        /// Per-request embedding timeout, in seconds
+        #[arg(long, default_value_t = 120)]
+        timeout: u64,
+    },
     /// Compact transcripts into daily/monthly analysis
     Compact {
         #[command(subcommand)]
@@ -298,6 +325,49 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 case_sensitive,
             };
             return cassio::search::run_search(&dir, &query, options);
+        }
+        Some(Command::Index {
+            month,
+            include_training,
+            include_paths,
+            provider,
+            model,
+            base_url,
+            batch_size,
+            timeout,
+        }) => {
+            let config = if cli.detached {
+                Config::default()
+            } else {
+                Config::load()
+            };
+            let dir = cli
+                .output
+                .clone()
+                .or_else(|| config.output_path())
+                .ok_or_else(|| {
+                    CassioError::Other(
+                        "--output is required (or set via `cassio set output <path>`)".into(),
+                    )
+                })?;
+            let embedding = config.embedding.as_ref();
+            let options = cassio::index::IndexOptions {
+                month,
+                include_training,
+                include_paths,
+                provider: provider
+                    .or_else(|| embedding.and_then(|cfg| cfg.provider.clone()))
+                    .unwrap_or_else(|| "ollama".to_string()),
+                model: model
+                    .or_else(|| embedding.and_then(|cfg| cfg.model.clone()))
+                    .unwrap_or_else(|| "cassio-embedding".to_string()),
+                base_url: base_url
+                    .or_else(|| embedding.and_then(|cfg| cfg.base_url.clone()))
+                    .unwrap_or_else(|| "http://127.0.0.1:11434".to_string()),
+                batch_size,
+                timeout_secs: timeout,
+            };
+            return cassio::index::run_index(&dir, options);
         }
         Some(Command::Compact { action }) => {
             let config = if cli.detached {

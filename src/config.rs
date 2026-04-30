@@ -63,6 +63,17 @@ pub struct SourcesConfig {
     pub pi: Option<String>,
 }
 
+/// Embedding provider options used by `cassio index`.
+#[derive(Debug, Default, Deserialize)]
+pub struct EmbeddingConfig {
+    /// Embedding provider. Currently only `"ollama"` is supported.
+    pub provider: Option<String>,
+    /// Embedding model name passed to the provider.
+    pub model: Option<String>,
+    /// Provider base URL, such as an Ollama server at `http://127.0.0.1:11434`.
+    pub base_url: Option<String>,
+}
+
 /// Top-level config deserialized from `~/.config/cassio/config.toml`.
 ///
 /// All fields are optional. Missing fields fall back to built-in defaults, so a
@@ -82,6 +93,8 @@ pub struct Config {
     pub provider: Option<String>,
     /// Base URL for the `"openai"` provider, such as a local llama.cpp `/v1` endpoint.
     pub base_url: Option<String>,
+    /// Embedding settings for semantic indexing.
+    pub embedding: Option<EmbeddingConfig>,
     #[serde(default)]
     pub git: GitConfig,
     pub sources: Option<SourcesConfig>,
@@ -250,6 +263,16 @@ pub fn init() -> Result<(), CassioError> {
 
 # Default model name (passed to the selected provider)
 # model = "llama3.1"
+
+[embedding]
+# Provider for `cassio index`; currently only "ollama" is supported
+# provider = "ollama"
+
+# Embedding model name
+# model = "cassio-embedding"
+
+# Ollama base URL
+# base_url = "http://127.0.0.1:11434"
 
 [git]
 # Auto-commit output files after processing

@@ -164,7 +164,7 @@ fn files_for_artifact(root: &Path, artifact: SearchArtifact) -> Vec<PathBuf> {
     paths
 }
 
-fn artifact_for_path(path: &Path) -> Option<SearchArtifact> {
+pub(crate) fn artifact_for_path(path: &Path) -> Option<SearchArtifact> {
     let name = path.file_name()?.to_str()?;
     if name.ends_with(".monthly.md") {
         Some(SearchArtifact::Monthly)
@@ -265,7 +265,7 @@ fn normalize_term(term: &str) -> String {
     term.to_lowercase()
 }
 
-fn strip_path_noise(line: &str) -> String {
+pub(crate) fn strip_path_noise(line: &str) -> String {
     let without_markdown_targets = strip_markdown_link_targets(line);
     let mut scrubbed = String::with_capacity(without_markdown_targets.len());
     for token in without_markdown_targets.split_whitespace() {

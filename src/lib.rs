@@ -5,6 +5,7 @@ pub mod discover;
 pub mod error;
 pub mod formatter;
 pub mod git;
+pub mod index;
 pub mod parser;
 pub mod pricing;
 pub mod redact;
