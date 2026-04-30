@@ -202,6 +202,36 @@ fn chunk_content(
             continue;
         }
 
+        if embedding_line.len() > max_chars {
+            push_chunk(
+                &mut chunks,
+                source_path,
+                artifact,
+                &mut original_lines,
+                &mut embedding_lines,
+                line_start,
+                line_end,
+            );
+            line_start = 0;
+            line_end = 0;
+            for (segment_index, segment) in split_long_text(&embedding_line, max_chars)
+                .into_iter()
+                .enumerate()
+            {
+                push_index_chunk(
+                    &mut chunks,
+                    source_path,
+                    artifact,
+                    line_no,
+                    line_no,
+                    segment_index,
+                    segment.clone(),
+                    segment,
+                );
+            }
+            continue;
+        }
+
         let next_len = embedding_lines.iter().map(String::len).sum::<usize>()
             + embedding_lines.len()
             + embedding_line.len();
@@ -254,8 +284,32 @@ fn push_chunk(
 
     let chunk_text = original_lines.join("\n");
     let embedding_text = embedding_lines.join("\n");
+    push_index_chunk(
+        chunks,
+        source_path,
+        artifact,
+        line_start,
+        line_end,
+        0,
+        chunk_text,
+        embedding_text,
+    );
+    original_lines.clear();
+    embedding_lines.clear();
+}
+
+fn push_index_chunk(
+    chunks: &mut Vec<IndexChunk>,
+    source_path: &str,
+    artifact: SearchArtifact,
+    line_start: usize,
+    line_end: usize,
+    segment_index: usize,
+    chunk_text: String,
+    embedding_text: String,
+) {
     let content_hash = hash_text(&embedding_text);
-    let id = chunk_id(source_path, artifact, line_start, line_end);
+    let id = chunk_id(source_path, artifact, line_start, line_end, segment_index);
     chunks.push(IndexChunk {
         id,
         source_path: source_path.to_string(),
@@ -266,13 +320,28 @@ fn push_chunk(
         chunk_text,
         embedding_text,
     });
-    original_lines.clear();
-    embedding_lines.clear();
 }
 
 fn is_tool_status_line(line: &str) -> bool {
     let trimmed = line.trim_start();
     trimmed.starts_with('✅') || trimmed.starts_with('❌')
+}
+
+fn split_long_text(text: &str, max_chars: usize) -> Vec<String> {
+    let max_chars = max_chars.max(1);
+    let mut out = Vec::new();
+    let mut current = String::new();
+    for ch in text.chars() {
+        if current.chars().count() >= max_chars {
+            out.push(current);
+            current = String::new();
+        }
+        current.push(ch);
+    }
+    if !current.is_empty() {
+        out.push(current);
+    }
+    out
 }
 
 fn open_index(path: &Path, root: &Path, options: &IndexOptions) -> Result<Connection, CassioError> {
@@ -564,13 +633,15 @@ fn chunk_id(
     artifact: SearchArtifact,
     line_start: usize,
     line_end: usize,
+    segment_index: usize,
 ) -> String {
     hash_text(&format!(
-        "{}\0{}\0{}\0{}",
+        "{}\0{}\0{}\0{}\0{}",
         source_path,
         artifact_name(artifact),
         line_start,
-        line_end
+        line_end,
+        segment_index
     ))
 }
 
@@ -653,6 +724,35 @@ mod tests {
         );
         assert_eq!(chunks.len(), 1);
         assert!(chunks[0].embedding_text.contains("/Users/ianzepp"));
+    }
+
+    #[test]
+    fn oversized_single_lines_are_split_before_embedding() {
+        let long = "x".repeat(4_250);
+        let chunks = chunk_content(
+            "2026-04/2026-04-30T10-00-00-codex.md",
+            SearchArtifact::Session,
+            &long,
+            false,
+            1_800,
+        );
+
+        assert_eq!(chunks.len(), 3);
+        assert!(chunks.iter().all(|chunk| chunk.line_start == 1));
+        assert!(chunks.iter().all(|chunk| chunk.line_end == 1));
+        assert!(
+            chunks
+                .iter()
+                .all(|chunk| chunk.embedding_text.len() <= 1_800)
+        );
+        assert_ne!(chunks[0].id, chunks[1].id);
+        assert_ne!(chunks[1].id, chunks[2].id);
+    }
+
+    #[test]
+    fn split_long_text_respects_character_boundaries() {
+        let chunks = split_long_text("åß∂ƒ", 2);
+        assert_eq!(chunks, vec!["åß".to_string(), "∂ƒ".to_string()]);
     }
 
     #[test]
