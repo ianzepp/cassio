@@ -438,6 +438,7 @@ cassio search "skill-author" --month 2026-04
 cassio search "Permissions could not be resolved" --summaries-only
 cassio search "session_id|source_path" --regex --include-training --json
 cassio search "portfolio.service.ts" --include-paths
+cassio search "why did the branch keep snapping back?" --semantic
 ```
 
 Literal queries are split on whitespace and ANDed on each line, so
@@ -447,6 +448,12 @@ matching. By default, path-heavy tool lines and markdown link targets are ignore
 for matching so terms from `/Users/...`, `/Volumes/...`, or tool path arguments
 do not drown out conversation hits. Use `--include-paths` when searching for
 file names or path text. The command uses config `output` when `-o` is omitted.
+
+Use `--semantic` after running `cassio index` to retrieve conceptually related
+chunks from the semantic index. Semantic search embeds the query with the
+configured `[embedding]` provider/model and ranks indexed chunks by cosine
+similarity. It still honors `--month`, `--summaries-only`, `--include-training`,
+`--limit`, and `--json`.
 
 ```
 cassio search [OPTIONS] <QUERY>
@@ -459,6 +466,7 @@ Options:
       --include-paths         Let file paths and tool path arguments satisfy query terms
       --regex                 Treat query as a regular expression
       --case-sensitive        Use case-sensitive matching
+      --semantic              Use the semantic embedding index instead of lexical matching
       --json                  Emit JSON instead of text
   -o, --output <DIR>          Directory containing transcript files
 ```

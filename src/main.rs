@@ -138,6 +138,9 @@ enum Command {
         /// Use case-sensitive matching
         #[arg(long)]
         case_sensitive: bool,
+        /// Use the semantic embedding index instead of line-level lexical matching
+        #[arg(long)]
+        semantic: bool,
         /// Emit JSON instead of text
         #[arg(long)]
         json: bool,
@@ -298,6 +301,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             include_paths,
             regex,
             case_sensitive,
+            semantic,
             json,
         }) => {
             let config = if cli.detached {
@@ -314,6 +318,20 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         "--output is required (or set via `cassio set output <path>`)".into(),
                     )
                 })?;
+            let semantic_options = if semantic {
+                let embedding = config.embedding.as_ref();
+                let index_options = index_options_from_config(
+                    embedding, None, false, false, None, None, None, None, None,
+                );
+                Some(cassio::search::SemanticSearchOptions {
+                    provider: index_options.provider,
+                    model: index_options.model,
+                    base_url: index_options.base_url,
+                    timeout_secs: index_options.timeout_secs,
+                })
+            } else {
+                None
+            };
             let options = cassio::search::SearchOptions {
                 month,
                 limit,
@@ -323,6 +341,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 json,
                 regex,
                 case_sensitive,
+                semantic: semantic_options,
             };
             return cassio::search::run_search(&dir, &query, options);
         }

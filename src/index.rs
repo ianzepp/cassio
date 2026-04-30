@@ -399,6 +399,21 @@ struct OllamaEmbedResponse {
     embeddings: Vec<Vec<f32>>,
 }
 
+pub(crate) fn embed_texts(
+    provider: &str,
+    base_url: &str,
+    model: &str,
+    input: &[&str],
+    timeout_secs: u64,
+) -> Result<Vec<Vec<f32>>, CassioError> {
+    if provider != "ollama" {
+        return Err(CassioError::Other(format!(
+            "Unsupported embedding provider: {provider} (supported: ollama)"
+        )));
+    }
+    embed_ollama(base_url, model, input, Duration::from_secs(timeout_secs))
+}
+
 fn embed_ollama(
     base_url: &str,
     model: &str,
@@ -514,7 +529,7 @@ fn delete_stale_chunks(
     Ok(deleted)
 }
 
-fn index_path_for(root: &Path, provider: &str, model: &str) -> PathBuf {
+pub(crate) fn index_path_for(root: &Path, provider: &str, model: &str) -> PathBuf {
     root.join(".cassio")
         .join("index")
         .join(format!("{}.sqlite", slug(&format!("{provider}-{model}"))))
@@ -571,6 +586,23 @@ fn encode_embedding(embedding: &[f32]) -> Vec<u8> {
         out.extend_from_slice(&value.to_le_bytes());
     }
     out
+}
+
+pub(crate) fn decode_embedding(blob: &[u8]) -> Result<Vec<f32>, CassioError> {
+    if !blob.len().is_multiple_of(std::mem::size_of::<f32>()) {
+        return Err(CassioError::Other(format!(
+            "Invalid embedding blob length: {}",
+            blob.len()
+        )));
+    }
+    Ok(blob
+        .chunks_exact(std::mem::size_of::<f32>())
+        .map(|bytes| {
+            let mut raw = [0u8; std::mem::size_of::<f32>()];
+            raw.copy_from_slice(bytes);
+            f32::from_le_bytes(raw)
+        })
+        .collect())
 }
 
 fn truncate_for_error(value: &str) -> String {
@@ -660,5 +692,17 @@ mod tests {
         assert_eq!(blob.len(), 8);
         assert_eq!(f32::from_le_bytes(blob[0..4].try_into().unwrap()), 1.0);
         assert_eq!(f32::from_le_bytes(blob[4..8].try_into().unwrap()), -2.0);
+    }
+
+    #[test]
+    fn embedding_decoding_round_trips_f32_blob() {
+        let blob = encode_embedding(&[0.25, 0.5, -1.0]);
+        let decoded = decode_embedding(&blob).unwrap();
+        assert_eq!(decoded, vec![0.25, 0.5, -1.0]);
+    }
+
+    #[test]
+    fn embedding_decoding_rejects_invalid_blob_length() {
+        assert!(decode_embedding(&[1, 2, 3]).is_err());
     }
 }

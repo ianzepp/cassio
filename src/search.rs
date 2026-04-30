@@ -2,10 +2,12 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use regex::RegexBuilder;
+use rusqlite::{Connection, params};
 use serde::Serialize;
 use walkdir::WalkDir;
 
 use crate::error::CassioError;
+use crate::index;
 
 #[derive(Debug, Clone)]
 pub struct SearchOptions {
@@ -17,6 +19,15 @@ pub struct SearchOptions {
     pub json: bool,
     pub regex: bool,
     pub case_sensitive: bool,
+    pub semantic: Option<SemanticSearchOptions>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SemanticSearchOptions {
+    pub provider: String,
+    pub model: String,
+    pub base_url: String,
+    pub timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -33,7 +44,11 @@ pub struct SearchHit {
     pub artifact: SearchArtifact,
     pub path: PathBuf,
     pub line: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub line_end: Option<usize>,
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub score: Option<f32>,
 }
 
 #[derive(Debug)]
@@ -108,6 +123,15 @@ pub fn search(
 ) -> Result<Vec<SearchHit>, CassioError> {
     if options.limit == 0 {
         return Ok(Vec::new());
+    }
+
+    if options.semantic.is_some() {
+        if options.regex {
+            return Err(CassioError::Other(
+                "--semantic cannot be combined with --regex".into(),
+            ));
+        }
+        return semantic_search(root, query, options);
     }
 
     let target = if let Some(month) = &options.month {
@@ -218,7 +242,9 @@ fn search_file(
             artifact,
             path: path.to_path_buf(),
             line: index + 1,
+            line_end: None,
             text: truncate_line(line.trim(), 280),
+            score: None,
         });
         if hits.len() >= options.limit {
             break;
@@ -241,14 +267,39 @@ fn print_hits(root: &Path, query: &str, options: &SearchOptions, hits: &[SearchH
         return;
     }
 
+    if options.semantic.is_some() {
+        println!("\n== semantic matches ==");
+        for hit in hits {
+            print_hit(root, hit);
+        }
+        return;
+    }
+
     let mut last_artifact = None;
     for hit in hits {
         if last_artifact != Some(hit.artifact) {
             println!("\n== {} ==", artifact_label(hit.artifact));
             last_artifact = Some(hit.artifact);
         }
-        let display_path = hit.path.strip_prefix(root).unwrap_or(&hit.path);
-        println!("{}:{}: {}", display_path.display(), hit.line, hit.text);
+        print_hit(root, hit);
+    }
+}
+
+fn print_hit(root: &Path, hit: &SearchHit) {
+    let display_path = hit.path.strip_prefix(root).unwrap_or(&hit.path);
+    let line = match hit.line_end {
+        Some(end) if end > hit.line => format!("{}-{}", hit.line, end),
+        _ => hit.line.to_string(),
+    };
+    if let Some(score) = hit.score {
+        println!(
+            "{}:{} [{score:.3}]: {}",
+            display_path.display(),
+            line,
+            hit.text
+        );
+    } else {
+        println!("{}:{}: {}", display_path.display(), line, hit.text);
     }
 }
 
@@ -259,6 +310,155 @@ fn artifact_label(artifact: SearchArtifact) -> &'static str {
         SearchArtifact::Session => "session transcripts",
         SearchArtifact::Training => "training metadata",
     }
+}
+
+fn semantic_search(
+    root: &Path,
+    query: &str,
+    options: &SearchOptions,
+) -> Result<Vec<SearchHit>, CassioError> {
+    let Some(semantic) = &options.semantic else {
+        return Ok(Vec::new());
+    };
+    if query.split_whitespace().next().is_none() {
+        return Err(CassioError::Other("Search query cannot be empty".into()));
+    }
+    if !root.exists() {
+        return Err(CassioError::Other(format!(
+            "Search target does not exist: {}",
+            root.display()
+        )));
+    }
+
+    let index_path = index::index_path_for(root, &semantic.provider, &semantic.model);
+    if !index_path.exists() {
+        return Err(CassioError::Other(format!(
+            "Semantic index not found: {} (run `cassio index` first)",
+            index_path.display()
+        )));
+    }
+
+    let query_embeddings = index::embed_texts(
+        &semantic.provider,
+        &semantic.base_url,
+        &semantic.model,
+        &[query],
+        semantic.timeout_secs,
+    )?;
+    let Some(query_embedding) = query_embeddings.first() else {
+        return Err(CassioError::Other(
+            "Embedding provider returned no query embedding".into(),
+        ));
+    };
+
+    let conn = Connection::open(&index_path)
+        .map_err(|e| CassioError::Other(format!("Failed to open semantic index: {e}")))?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT source_path, artifact, line_start, line_end, chunk_text, embedding
+            FROM chunks
+            "#,
+        )
+        .map_err(|e| CassioError::Other(format!("Failed to query semantic index: {e}")))?;
+    let rows = stmt
+        .query_map(params![], |row| {
+            Ok(IndexedChunkRow {
+                source_path: row.get(0)?,
+                artifact: row.get(1)?,
+                line_start: row.get::<_, i64>(2)? as usize,
+                line_end: row.get::<_, i64>(3)? as usize,
+                chunk_text: row.get(4)?,
+                embedding: row.get(5)?,
+            })
+        })
+        .map_err(|e| CassioError::Other(format!("Failed to read semantic index: {e}")))?;
+
+    let mut hits = Vec::new();
+    for row in rows {
+        let row =
+            row.map_err(|e| CassioError::Other(format!("Failed to read indexed chunk: {e}")))?;
+        let Some(artifact) = artifact_from_index_name(&row.artifact) else {
+            continue;
+        };
+        if !artifact_in_scope(artifact, &row.source_path, options) {
+            continue;
+        }
+        let embedding = index::decode_embedding(&row.embedding)?;
+        let Some(score) = cosine_similarity(query_embedding, &embedding) else {
+            continue;
+        };
+        hits.push(SearchHit {
+            artifact,
+            path: root.join(row.source_path),
+            line: row.line_start,
+            line_end: Some(row.line_end),
+            text: truncate_line(&row.chunk_text.replace('\n', " / "), 500),
+            score: Some(score),
+        });
+    }
+
+    hits.sort_by(|a, b| {
+        b.score
+            .unwrap_or(f32::NEG_INFINITY)
+            .total_cmp(&a.score.unwrap_or(f32::NEG_INFINITY))
+    });
+    hits.truncate(options.limit);
+    Ok(hits)
+}
+
+struct IndexedChunkRow {
+    source_path: String,
+    artifact: String,
+    line_start: usize,
+    line_end: usize,
+    chunk_text: String,
+    embedding: Vec<u8>,
+}
+
+fn artifact_in_scope(artifact: SearchArtifact, source_path: &str, options: &SearchOptions) -> bool {
+    if let Some(month) = &options.month
+        && !source_path.starts_with(&format!("{month}/"))
+    {
+        return false;
+    }
+    if options.summaries_only
+        && !matches!(artifact, SearchArtifact::Monthly | SearchArtifact::Daily)
+    {
+        return false;
+    }
+    if artifact == SearchArtifact::Training && !options.include_training {
+        return false;
+    }
+    true
+}
+
+fn artifact_from_index_name(name: &str) -> Option<SearchArtifact> {
+    match name {
+        "monthly" => Some(SearchArtifact::Monthly),
+        "daily" => Some(SearchArtifact::Daily),
+        "session" => Some(SearchArtifact::Session),
+        "training" => Some(SearchArtifact::Training),
+        _ => None,
+    }
+}
+
+fn cosine_similarity(a: &[f32], b: &[f32]) -> Option<f32> {
+    if a.len() != b.len() || a.is_empty() {
+        return None;
+    }
+    let mut dot = 0.0f32;
+    let mut a_norm = 0.0f32;
+    let mut b_norm = 0.0f32;
+    for (left, right) in a.iter().zip(b) {
+        dot += left * right;
+        a_norm += left * left;
+        b_norm += right * right;
+    }
+    if a_norm == 0.0 || b_norm == 0.0 {
+        return None;
+    }
+    Some(dot / (a_norm.sqrt() * b_norm.sqrt()))
 }
 
 fn normalize_term(term: &str) -> String {
@@ -375,6 +575,7 @@ mod tests {
             json: false,
             regex: false,
             case_sensitive: false,
+            semantic: None,
         }
     }
 
@@ -462,5 +663,36 @@ mod tests {
         assert!(!is_session_markdown_name("compact-prompt.md"));
         assert!(!is_session_markdown_name("monthly-prompt.md"));
         assert!(is_session_markdown_name("unknown-claude.md"));
+    }
+
+    #[test]
+    fn cosine_similarity_scores_identical_vectors_highest() {
+        let same = cosine_similarity(&[1.0, 2.0, 3.0], &[1.0, 2.0, 3.0]).unwrap();
+        let different = cosine_similarity(&[1.0, 0.0], &[0.0, 1.0]).unwrap();
+        assert!((same - 1.0).abs() < 0.0001);
+        assert_eq!(different, 0.0);
+    }
+
+    #[test]
+    fn semantic_scope_filters_by_month_and_artifact_options() {
+        let mut options = test_options();
+        options.month = Some("2026-04".to_string());
+        options.summaries_only = true;
+
+        assert!(artifact_in_scope(
+            SearchArtifact::Daily,
+            "2026-04/2026-04-30.daily.md",
+            &options
+        ));
+        assert!(!artifact_in_scope(
+            SearchArtifact::Session,
+            "2026-04/2026-04-30T10-00-00-codex.md",
+            &options
+        ));
+        assert!(!artifact_in_scope(
+            SearchArtifact::Daily,
+            "2026-03/2026-03-30.daily.md",
+            &options
+        ));
     }
 }
