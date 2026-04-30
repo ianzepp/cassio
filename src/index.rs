@@ -93,22 +93,47 @@ pub fn build_index(root: &Path, options: &IndexOptions) -> Result<IndexReport, C
         )));
     }
 
+    eprintln!("index: target {}", target.display());
+    eprintln!(
+        "index: provider={} model={} base_url={}",
+        options.provider, options.model, options.base_url
+    );
+
     let files = files_to_index(&target, options.include_training);
+    eprintln!("index: found {} file(s) to scan", files.len());
     let mut chunks = Vec::new();
-    for path in &files {
+    for (index, path) in files.iter().enumerate() {
         chunks.extend(chunk_file(
             root,
             path,
             options.include_paths,
             DEFAULT_CHUNK_CHARS,
         )?);
+        let current = index + 1;
+        if current == 1 || current == files.len() || current % 100 == 0 {
+            eprintln!(
+                "index: chunked {}/{} file(s), {} chunk(s) prepared",
+                current,
+                files.len(),
+                chunks.len()
+            );
+        }
     }
+    eprintln!(
+        "index: prepared {} chunk(s) from {} file(s)",
+        chunks.len(),
+        files.len()
+    );
 
     let index_path = index_path_for(root, &options.provider, &options.model);
+    eprintln!("index: database {}", index_path.display());
     let conn = open_index(&index_path, root, options)?;
     let (to_embed, reused) = changed_chunks(&conn, &chunks)?;
     let embedded = embed_and_store(&conn, &to_embed, options)?;
     let stale_deleted = delete_stale_chunks(&conn, &files, &chunks, root)?;
+    if stale_deleted > 0 {
+        eprintln!("index: deleted {stale_deleted} stale chunk(s)");
+    }
 
     Ok(IndexReport {
         index_path,
@@ -403,10 +428,14 @@ fn changed_chunks(
 ) -> Result<(Vec<IndexChunk>, usize), CassioError> {
     let mut changed = Vec::new();
     let mut reused = 0usize;
+    eprintln!(
+        "index: checking {} chunk(s) against existing index",
+        chunks.len()
+    );
     let mut stmt = conn
         .prepare("SELECT content_hash FROM chunks WHERE id = ?1")
         .map_err(|e| CassioError::Other(format!("Failed to query index: {e}")))?;
-    for chunk in chunks {
+    for (index, chunk) in chunks.iter().enumerate() {
         let existing: Option<String> = stmt
             .query_row(params![chunk.id], |row| row.get(0))
             .optional()
@@ -415,6 +444,16 @@ fn changed_chunks(
             reused += 1;
         } else {
             changed.push(chunk.clone());
+        }
+        let current = index + 1;
+        if current == chunks.len() || current % 1_000 == 0 {
+            eprintln!(
+                "index: checked {}/{} chunk(s), reused {}, pending embed {}",
+                current,
+                chunks.len(),
+                reused,
+                changed.len()
+            );
         }
     }
     Ok((changed, reused))
@@ -426,6 +465,7 @@ fn embed_and_store(
     options: &IndexOptions,
 ) -> Result<usize, CassioError> {
     if chunks.is_empty() {
+        eprintln!("index: all chunks already indexed; no embeddings needed");
         return Ok(0);
     }
     if options.provider != "ollama" {
@@ -436,8 +476,26 @@ fn embed_and_store(
     }
 
     let batch_size = options.batch_size.max(1);
+    let total_batches = chunks.len().div_ceil(batch_size);
+    eprintln!(
+        "index: embedding {} chunk(s) in {} batch(es), batch_size={}",
+        chunks.len(),
+        total_batches,
+        batch_size
+    );
     let mut embedded = 0usize;
-    for batch in chunks.chunks(batch_size) {
+    for (batch_index, batch) in chunks.chunks(batch_size).enumerate() {
+        let batch_number = batch_index + 1;
+        let start = embedded + 1;
+        let end = embedded + batch.len();
+        eprintln!(
+            "index: embedding batch {}/{} (chunk {}-{} of {})",
+            batch_number,
+            total_batches,
+            start,
+            end,
+            chunks.len()
+        );
         let input: Vec<&str> = batch
             .iter()
             .map(|chunk| chunk.embedding_text.as_str())
@@ -459,6 +517,13 @@ fn embed_and_store(
             store_chunk(conn, chunk, &embedding)?;
             embedded += 1;
         }
+        eprintln!(
+            "index: stored batch {}/{}; embedded {}/{} chunk(s)",
+            batch_number,
+            total_batches,
+            embedded,
+            chunks.len()
+        );
     }
     Ok(embedded)
 }
@@ -635,14 +700,24 @@ fn chunk_id(
     line_end: usize,
     segment_index: usize,
 ) -> String {
-    hash_text(&format!(
-        "{}\0{}\0{}\0{}\0{}",
-        source_path,
-        artifact_name(artifact),
-        line_start,
-        line_end,
-        segment_index
-    ))
+    if segment_index == 0 {
+        hash_text(&format!(
+            "{}\0{}\0{}\0{}",
+            source_path,
+            artifact_name(artifact),
+            line_start,
+            line_end
+        ))
+    } else {
+        hash_text(&format!(
+            "{}\0{}\0{}\0{}\0{}",
+            source_path,
+            artifact_name(artifact),
+            line_start,
+            line_end,
+            segment_index
+        ))
+    }
 }
 
 fn hash_text(text: &str) -> String {
@@ -747,6 +822,22 @@ mod tests {
         );
         assert_ne!(chunks[0].id, chunks[1].id);
         assert_ne!(chunks[1].id, chunks[2].id);
+    }
+
+    #[test]
+    fn unsplit_chunk_ids_keep_original_shape() {
+        let id = chunk_id(
+            "2026-04/2026-04-30.daily.md",
+            SearchArtifact::Daily,
+            10,
+            12,
+            0,
+        );
+        let old_shape = hash_text(&format!(
+            "{}\0{}\0{}\0{}",
+            "2026-04/2026-04-30.daily.md", "daily", 10, 12
+        ));
+        assert_eq!(id, old_shape);
     }
 
     #[test]
