@@ -24,7 +24,7 @@
 //! # Monthly compaction
 //!
 //! `run_monthly` aggregates all `.daily.md` files for a month. When the
-//! combined size fits within the 150KB input budget, a single LLM call suffices.
+//! combined size fits within the 100KB input budget, a single LLM call suffices.
 //! When it doesn't, a chunked multi-pass approach is used: each chunk is summarized
 //! separately, then a merge pass synthesizes the chunk summaries into a final monthly.
 //!
@@ -47,7 +47,7 @@
 //! - `extract_session` limits assistant response lines to 5 per message. This loses
 //!   detail but keeps compaction prompts within token budgets. The 5-line limit was
 //!   chosen empirically — enough context for the LLM to understand what was discussed.
-//! - Chunking uses a 150KB byte budget as a proxy for token count, assuming ~4 bytes
+//! - Chunking uses a 100KB byte budget as a proxy for token count, assuming ~4 bytes
 //!   per token. This is conservative; actual LLM context limits vary by provider and
 //!   model. Users with larger context windows can increase `MAX_INPUT_BYTES`.
 //! - `BTreeMap` is used for date grouping so days are always processed in
@@ -72,12 +72,12 @@ const DAILY_MERGE_PROMPT: &str = include_str!("prompts/daily_merge.md");
 const MONTHLY_PROMPT: &str = include_str!("prompts/monthly.md");
 const MONTHLY_MERGE_PROMPT: &str = include_str!("prompts/monthly_merge.md");
 
-/// Max input bytes per LLM call (~150KB ≈ 37.5K tokens at 4 bytes/token).
+/// Max input bytes per LLM call (~100KB ≈ 25K tokens at 4 bytes/token).
 ///
 /// This is intentionally conservative. Most providers support larger contexts,
 /// but staying well under the limit avoids truncation errors and ensures fast
 /// response times from smaller models.
-const MAX_INPUT_BYTES: usize = 150 * 1024;
+const MAX_INPUT_BYTES: usize = 100 * 1024;
 const LLM_TIMEOUT: Duration = Duration::from_secs(300);
 const LLM_RETRY_LIMIT: usize = 3;
 const RETRY_BACKOFF_SECS: [u64; 2] = [2, 5];

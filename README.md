@@ -326,7 +326,7 @@ cassio compact monthly -i 2025-12 --model llama3.1
 
 The monthly prompt aggregates patterns across all daily compactions for the month — what recurs, what evolves, and what's distinctive. It preserves direct quotes as evidence, counts when possible, and separates stable traits from evolving ones.
 
-If the compactions exceed the LLM context limit (~150KB), cassio automatically chunks them and runs a multi-pass summarization:
+If the compactions exceed the LLM context limit (~100KB), cassio automatically chunks them and runs a multi-pass summarization:
 
 ```
 monthly: 2026-01 (31 compaction files)
@@ -554,7 +554,7 @@ Options:
   -o, --output <DIR>      Directory containing month subdirectories
 ```
 
-Reads `.daily.md` files from `<output>/<YYYY-MM>/`, writes `<YYYY-MM>.monthly.md` in the same directory. Automatically chunks large months across multiple LLM calls (150KB input budget per call, ~37.5K tokens at 4 bytes/token).
+Reads `.daily.md` files from `<output>/<YYYY-MM>/`, writes `<YYYY-MM>.monthly.md` in the same directory. Automatically chunks large months across multiple LLM calls (100KB input budget per call, ~25K tokens at 4 bytes/token).
 
 ### cassio compact all
 
