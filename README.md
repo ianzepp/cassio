@@ -208,6 +208,8 @@ commit = true
 push = true
 
 max_input_bytes = 102400
+chunk_timeout_secs = 300
+max_retries = 3
 
 # Override default source paths (optional)
 # [sources]
@@ -229,6 +231,8 @@ CLI flags always override config values. With the config above, `cassio --all` j
 | `provider` | string | `ollama` | LLM provider for compaction (`ollama`, `claude`, `codex`, `openrouter`, or `openai`) |
 | `base_url` | string | *(none)* | Base URL for `provider = "openai"`, such as a local llama.cpp `/v1` endpoint |
 | `max_input_bytes` | integer | `102400` | Maximum input bytes per compaction call before cassio chunks the content |
+| `chunk_timeout_secs` | integer | `300` | Per-call timeout for compaction requests |
+| `max_retries` | integer | `3` | Maximum retries for each compaction request |
 | `embedding.auto_index` | bool | `false` | Update the semantic index after transcript generation |
 | `embedding.provider` | string | `ollama` | Embedding provider for `cassio index` |
 | `embedding.model` | string | `cassio-embedding` | Embedding model name |
@@ -310,7 +314,7 @@ Chunked days resume by default from on-disk state. Cassio caches successful chun
 
 Failures are classified as `timeout`, `provider_http_error`, `parse_error`, `empty_response`, `process`, `transport`, or `io`. On parse failures, cassio also writes the raw failing provider response into the same checkpoint directory for debugging.
 
-Each chunk or merge request uses a per-call timeout and bounded retries. The defaults are 5 minutes and 3 retries, configurable with `--chunk-timeout` and `--max-retries`. If a run finishes with one or more failed days, `cassio compact dailies` exits with code `2` and names the exact failed day and chunk or merge phase.
+Each chunk or merge request uses a per-call timeout and bounded retries. The defaults are 5 minutes and 3 retries, configurable with `chunk_timeout_secs` / `max_retries` in config or `--chunk-timeout` / `--max-retries` on the command line. If a run finishes with one or more failed days, `cassio compact dailies` exits with code `2` and names the exact failed day and chunk or merge phase.
 
 The compaction prompt extracts:
 - **Session clusters** grouped by topic, with verbatim user quotes

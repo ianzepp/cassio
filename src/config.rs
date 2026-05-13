@@ -108,6 +108,10 @@ pub struct Config {
     pub base_url: Option<String>,
     /// Maximum input bytes per compaction call before cassio chunks the content.
     pub max_input_bytes: Option<usize>,
+    /// Per-call timeout for compaction requests, in seconds.
+    pub chunk_timeout_secs: Option<u64>,
+    /// Maximum retries for each compaction request.
+    pub max_retries: Option<usize>,
     /// Embedding settings for semantic indexing.
     pub embedding: Option<EmbeddingConfig>,
     #[serde(default)]
@@ -281,6 +285,12 @@ pub fn init() -> Result<(), CassioError> {
 
 # Maximum input bytes per compaction call before cassio chunks the content
 # max_input_bytes = 102400
+
+# Per-call timeout for compaction requests, in seconds
+# chunk_timeout_secs = 300
+
+# Maximum retries for each compaction request
+# max_retries = 3
 
 [embedding]
 # Update the semantic index after transcript generation completes
@@ -646,6 +656,8 @@ format = "emoji-text"
 provider = "openai"
 base_url = "http://127.0.0.1:18173/v1"
 max_input_bytes = 102400
+chunk_timeout_secs = 300
+max_retries = 3
 
 [embedding]
 auto_index = true
@@ -674,6 +686,8 @@ pi = "~/.pi/agent/sessions"
             Some("http://127.0.0.1:18173/v1")
         );
         assert_eq!(config.max_input_bytes, Some(102400));
+        assert_eq!(config.chunk_timeout_secs, Some(300));
+        assert_eq!(config.max_retries, Some(3));
         let embedding = config.embedding.as_ref().unwrap();
         assert!(embedding.auto_index);
         assert_eq!(embedding.provider.as_deref(), Some("ollama"));
@@ -705,6 +719,8 @@ pi = "~/.pi/agent/sessions"
         assert!(!config.git.commit);
         assert!(!config.git.push);
         assert!(config.max_input_bytes.is_none());
+        assert!(config.chunk_timeout_secs.is_none());
+        assert!(config.max_retries.is_none());
     }
 
     #[test]

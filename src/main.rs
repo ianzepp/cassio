@@ -407,6 +407,8 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             let default_max_input_bytes = config
                 .max_input_bytes
                 .unwrap_or(cassio::compact::CompactOptions::default().max_input_bytes);
+            let default_chunk_timeout_secs = config.chunk_timeout_secs.unwrap_or(300);
+            let default_max_retries = config.max_retries.unwrap_or(3);
             match action {
                 CompactAction::All {
                     model,
@@ -418,6 +420,16 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     let model = model.unwrap_or_else(|| default_model.clone());
                     let provider = provider.unwrap_or_else(|| default_provider.clone());
                     let base_url = base_url.or_else(|| default_base_url.clone());
+                    let chunk_timeout = if chunk_timeout == 300 {
+                        default_chunk_timeout_secs
+                    } else {
+                        chunk_timeout
+                    };
+                    let max_retries = if max_retries == 3 {
+                        default_max_retries
+                    } else {
+                        max_retries
+                    };
                     let compact_options = cassio::compact::CompactOptions::new(
                         chunk_timeout,
                         max_retries,
@@ -523,6 +535,16 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     let model = model.unwrap_or_else(|| default_model.clone());
                     let provider = provider.unwrap_or_else(|| default_provider.clone());
                     let base_url = base_url.or_else(|| default_base_url.clone());
+                    let chunk_timeout = if chunk_timeout == 300 {
+                        default_chunk_timeout_secs
+                    } else {
+                        chunk_timeout
+                    };
+                    let max_retries = if max_retries == 3 {
+                        default_max_retries
+                    } else {
+                        max_retries
+                    };
                     let compact_options = cassio::compact::CompactOptions::new(
                         chunk_timeout,
                         max_retries,
@@ -582,8 +604,11 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     let model = model.unwrap_or(default_model);
                     let provider = provider.unwrap_or(default_provider);
                     let base_url = base_url.or(default_base_url);
-                    let compact_options =
-                        cassio::compact::CompactOptions::new(300, 3, default_max_input_bytes);
+                    let compact_options = cassio::compact::CompactOptions::new(
+                        default_chunk_timeout_secs,
+                        default_max_retries,
+                        default_max_input_bytes,
+                    );
                     let dir = cli
                         .output
                         .clone()
