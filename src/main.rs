@@ -404,6 +404,9 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 .clone()
                 .unwrap_or_else(|| "ollama".to_string());
             let default_base_url = config.base_url.clone();
+            let default_max_input_bytes = config
+                .max_input_bytes
+                .unwrap_or(cassio::compact::CompactOptions::default().max_input_bytes);
             match action {
                 CompactAction::All {
                     model,
@@ -415,8 +418,11 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     let model = model.unwrap_or_else(|| default_model.clone());
                     let provider = provider.unwrap_or_else(|| default_provider.clone());
                     let base_url = base_url.or_else(|| default_base_url.clone());
-                    let compact_options =
-                        cassio::compact::CompactOptions::new(chunk_timeout, max_retries);
+                    let compact_options = cassio::compact::CompactOptions::new(
+                        chunk_timeout,
+                        max_retries,
+                        default_max_input_bytes,
+                    );
                     let output_dir = cli
                         .output
                         .clone()
@@ -492,6 +498,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         &model,
                         &provider,
                         base_url.as_deref(),
+                        &compact_options,
                     )?;
 
                     maybe_auto_index(&output_dir, &config, cli.dry_run)?;
@@ -516,8 +523,11 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     let model = model.unwrap_or_else(|| default_model.clone());
                     let provider = provider.unwrap_or_else(|| default_provider.clone());
                     let base_url = base_url.or_else(|| default_base_url.clone());
-                    let compact_options =
-                        cassio::compact::CompactOptions::new(chunk_timeout, max_retries);
+                    let compact_options = cassio::compact::CompactOptions::new(
+                        chunk_timeout,
+                        max_retries,
+                        default_max_input_bytes,
+                    );
                     let input_dir = input
                         .or_else(|| cli.output.clone())
                         .or_else(|| config_output.clone())
@@ -572,6 +582,8 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     let model = model.unwrap_or(default_model);
                     let provider = provider.unwrap_or(default_provider);
                     let base_url = base_url.or(default_base_url);
+                    let compact_options =
+                        cassio::compact::CompactOptions::new(300, 3, default_max_input_bytes);
                     let dir = cli
                         .output
                         .clone()
@@ -589,6 +601,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         &model,
                         &provider,
                         base_url.as_deref(),
+                        &compact_options,
                     )?;
                     maybe_auto_index(&dir, &config, cli.dry_run)?;
                     cassio::git::auto_commit_and_push(

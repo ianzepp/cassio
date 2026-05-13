@@ -106,6 +106,8 @@ pub struct Config {
     pub provider: Option<String>,
     /// Base URL for the `"openai"` provider, such as a local llama.cpp `/v1` endpoint.
     pub base_url: Option<String>,
+    /// Maximum input bytes per compaction call before cassio chunks the content.
+    pub max_input_bytes: Option<usize>,
     /// Embedding settings for semantic indexing.
     pub embedding: Option<EmbeddingConfig>,
     #[serde(default)]
@@ -276,6 +278,9 @@ pub fn init() -> Result<(), CassioError> {
 
 # Default model name (passed to the selected provider)
 # model = "llama3.1"
+
+# Maximum input bytes per compaction call before cassio chunks the content
+# max_input_bytes = 102400
 
 [embedding]
 # Update the semantic index after transcript generation completes
@@ -640,6 +645,7 @@ output = "~/transcripts"
 format = "emoji-text"
 provider = "openai"
 base_url = "http://127.0.0.1:18173/v1"
+max_input_bytes = 102400
 
 [embedding]
 auto_index = true
@@ -667,6 +673,7 @@ pi = "~/.pi/agent/sessions"
             config.base_url.as_deref(),
             Some("http://127.0.0.1:18173/v1")
         );
+        assert_eq!(config.max_input_bytes, Some(102400));
         let embedding = config.embedding.as_ref().unwrap();
         assert!(embedding.auto_index);
         assert_eq!(embedding.provider.as_deref(), Some("ollama"));
@@ -697,6 +704,7 @@ pi = "~/.pi/agent/sessions"
         assert!(config.output.is_none());
         assert!(!config.git.commit);
         assert!(!config.git.push);
+        assert!(config.max_input_bytes.is_none());
     }
 
     #[test]

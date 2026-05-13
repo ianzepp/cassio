@@ -49,7 +49,7 @@
 //!   chosen empirically — enough context for the LLM to understand what was discussed.
 //! - Chunking uses a 100KB byte budget as a proxy for token count, assuming ~4 bytes
 //!   per token. This is conservative; actual LLM context limits vary by provider and
-//!   model. Users with larger context windows can increase `MAX_INPUT_BYTES`.
+//!   model. Users can override the byte budget in config via `max_input_bytes`.
 //! - `BTreeMap` is used for date grouping so days are always processed in
 //!   chronological order without an explicit sort step.
 
@@ -72,12 +72,12 @@ const DAILY_MERGE_PROMPT: &str = include_str!("prompts/daily_merge.md");
 const MONTHLY_PROMPT: &str = include_str!("prompts/monthly.md");
 const MONTHLY_MERGE_PROMPT: &str = include_str!("prompts/monthly_merge.md");
 
-/// Max input bytes per LLM call (~100KB ≈ 25K tokens at 4 bytes/token).
+/// Default max input bytes per LLM call (~100KB ≈ 25K tokens at 4 bytes/token).
 ///
 /// This is intentionally conservative. Most providers support larger contexts,
 /// but staying well under the limit avoids truncation errors and ensures fast
 /// response times from smaller models.
-const MAX_INPUT_BYTES: usize = 100 * 1024;
+const DEFAULT_MAX_INPUT_BYTES: usize = 100 * 1024;
 const LLM_TIMEOUT: Duration = Duration::from_secs(300);
 const LLM_RETRY_LIMIT: usize = 3;
 const RETRY_BACKOFF_SECS: [u64; 2] = [2, 5];
@@ -161,14 +161,16 @@ pub struct CompactOptions {
     pub chunk_timeout: Duration,
     pub max_retries: usize,
     pub resume: bool,
+    pub max_input_bytes: usize,
 }
 
 impl CompactOptions {
-    pub fn new(chunk_timeout_secs: u64, max_retries: usize) -> Self {
+    pub fn new(chunk_timeout_secs: u64, max_retries: usize, max_input_bytes: usize) -> Self {
         Self {
             chunk_timeout: Duration::from_secs(chunk_timeout_secs.max(1)),
             max_retries: max_retries.max(1),
             resume: true,
+            max_input_bytes: max_input_bytes.max(1),
         }
     }
 }
@@ -179,6 +181,7 @@ impl Default for CompactOptions {
             chunk_timeout: LLM_TIMEOUT,
             max_retries: LLM_RETRY_LIMIT,
             resume: true,
+            max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
         }
     }
 }
@@ -291,7 +294,7 @@ pub fn run_dailies(
 /// Compact all daily summary files for a single month into a `.monthly.md` summary.
 ///
 /// Reads every `.daily.md` from `<dir>/<month>/`, and either:
-/// - Sends all content in a single LLM call (when total size ≤ `MAX_INPUT_BYTES`)
+/// - Sends all content in a single LLM call (when total size ≤ configured budget)
 /// - Chunks the content, summarizes each chunk, then merges the chunk summaries
 ///
 /// The output is written to `<dir>/<month>/<month>.monthly.md`. If that file
@@ -307,9 +310,8 @@ pub fn run_monthly(
     model: &str,
     provider: &str,
     base_url: Option<&str>,
+    options: &CompactOptions,
 ) -> Result<(), CassioError> {
-    let options = CompactOptions::default();
-
     // Validate month format
     if month.len() != 7 || month.as_bytes()[4] != b'-' {
         return Err(CassioError::Other(format!(
@@ -366,7 +368,7 @@ pub fn run_monthly(
     let total_content_bytes: usize = contents.iter().map(|(_, c)| c.len()).sum();
     let total_with_prompt = total_content_bytes + prompt_overhead;
 
-    let result = if total_with_prompt <= MAX_INPUT_BYTES {
+    let result = if total_with_prompt <= options.max_input_bytes {
         // Single pass — everything fits
         eprintln!("  single pass ({} bytes)", total_content_bytes);
         let input = build_monthly_input(MONTHLY_PROMPT, month, &contents);
@@ -390,7 +392,7 @@ pub fn run_monthly(
         output
     } else {
         // Chunked — split into chunks, summarize each, then merge
-        let chunks = build_chunks(&contents, prompt_overhead);
+        let chunks = build_chunks(&contents, prompt_overhead, options.max_input_bytes);
         eprintln!(
             "  chunked: {} chunks ({} bytes total)",
             chunks.len(),
@@ -488,6 +490,7 @@ pub fn run_pending_monthlies(
     model: &str,
     provider: &str,
     base_url: Option<&str>,
+    options: &CompactOptions,
 ) -> Result<(), CassioError> {
     let pending = find_pending_months(dir)?;
 
@@ -503,7 +506,7 @@ pub fn run_pending_monthlies(
     );
 
     for month in &pending {
-        run_monthly(dir, month, model, provider, base_url)?;
+        run_monthly(dir, month, model, provider, base_url, options)?;
     }
 
     Ok(())
@@ -637,7 +640,7 @@ fn compact_day(
         detail: format!("{day}: failed to create {}: {e}", checkpoint_dir.display()),
     })?;
     let progress_path = progress_log_path(&checkpoint_dir);
-    let plan = plan_daily_compaction(day, &sessions);
+    let plan = plan_daily_compaction(day, &sessions, options.max_input_bytes);
     let total_chunks = match &plan {
         DailyCompactionPlan::Single(_) => 1,
         DailyCompactionPlan::Chunked(chunk_inputs) => chunk_inputs.len(),
@@ -996,16 +999,20 @@ fn write_day_status(
     write_atomic(&path, &body)
 }
 
-fn plan_daily_compaction(day: &str, sessions: &[(String, String)]) -> DailyCompactionPlan {
+fn plan_daily_compaction(
+    day: &str,
+    sessions: &[(String, String)],
+    max_input_bytes: usize,
+) -> DailyCompactionPlan {
     let prompt_overhead = COMPACT_PROMPT.len() + 100;
     let total_content_bytes: usize = sessions.iter().map(|(_, c)| c.len()).sum();
     let total_with_prompt = total_content_bytes + prompt_overhead;
 
-    if total_with_prompt <= MAX_INPUT_BYTES {
+    if total_with_prompt <= max_input_bytes {
         return DailyCompactionPlan::Single(build_daily_input(COMPACT_PROMPT, day, sessions));
     }
 
-    let chunks = build_chunks(sessions, prompt_overhead);
+    let chunks = build_chunks(sessions, prompt_overhead, max_input_bytes);
     let chunk_inputs = chunks
         .iter()
         .map(|chunk| build_daily_input(COMPACT_PROMPT, day, chunk))
@@ -1209,8 +1216,9 @@ fn build_monthly_input(prompt: &str, month: &str, items: &[(String, String)]) ->
 fn build_chunks(
     contents: &[(String, String)],
     prompt_overhead: usize,
+    max_input_bytes: usize,
 ) -> Vec<Vec<(String, String)>> {
-    let budget = MAX_INPUT_BYTES.saturating_sub(prompt_overhead);
+    let budget = max_input_bytes.saturating_sub(prompt_overhead);
     let mut chunks: Vec<Vec<(String, String)>> = Vec::new();
     let mut current_chunk: Vec<(String, String)> = Vec::new();
     let mut current_size: usize = 0;
@@ -1745,7 +1753,7 @@ mod tests {
     #[test]
     fn test_plan_daily_compaction_single() {
         let sessions = vec![("a.md".to_string(), "small content".to_string())];
-        let plan = plan_daily_compaction("2025-01-15", &sessions);
+        let plan = plan_daily_compaction("2025-01-15", &sessions, DEFAULT_MAX_INPUT_BYTES);
         match plan {
             DailyCompactionPlan::Single(input) => {
                 assert!(input.contains("2025-01-15"));
@@ -1759,7 +1767,7 @@ mod tests {
     fn test_plan_daily_compaction_chunked() {
         let big = "x".repeat(100_000);
         let sessions = vec![("a.md".to_string(), big.clone()), ("b.md".to_string(), big)];
-        let plan = plan_daily_compaction("2025-01-15", &sessions);
+        let plan = plan_daily_compaction("2025-01-15", &sessions, DEFAULT_MAX_INPUT_BYTES);
         match plan {
             DailyCompactionPlan::Chunked(chunk_inputs) => {
                 assert!(chunk_inputs.len() >= 2);
@@ -1788,20 +1796,20 @@ mod tests {
     #[test]
     fn test_build_chunks_single_chunk() {
         let contents = vec![("a".to_string(), "small content".to_string())];
-        let chunks = build_chunks(&contents, 100);
+        let chunks = build_chunks(&contents, 100, DEFAULT_MAX_INPUT_BYTES);
         assert_eq!(chunks.len(), 1);
         assert_eq!(chunks[0].len(), 1);
     }
 
     #[test]
     fn test_build_chunks_multiple() {
-        // Create content that exceeds MAX_INPUT_BYTES when combined
+        // Create content that exceeds the default budget when combined
         let big = "x".repeat(100_000);
         let contents = vec![
             ("a".to_string(), big.clone()),
             ("b".to_string(), big.clone()),
         ];
-        let chunks = build_chunks(&contents, 100);
+        let chunks = build_chunks(&contents, 100, DEFAULT_MAX_INPUT_BYTES);
         assert!(chunks.len() >= 2);
     }
 
@@ -1813,7 +1821,7 @@ mod tests {
             ("small".to_string(), "tiny".to_string()),
             ("big".to_string(), huge),
         ];
-        let chunks = build_chunks(&contents, 100);
+        let chunks = build_chunks(&contents, 100, DEFAULT_MAX_INPUT_BYTES);
         assert!(chunks.len() >= 2);
     }
 
