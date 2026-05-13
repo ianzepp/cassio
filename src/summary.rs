@@ -13,6 +13,7 @@ struct TranscriptStats {
     date: String, // YYYY-MM-DD
     project: String,
     model: Option<String>,
+    kind: TranscriptKind,
     user_msgs: u32,
     asst_msgs: u32,
     tool_ok: u32,
@@ -24,10 +25,35 @@ struct TranscriptStats {
     duration_secs: i64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+enum TranscriptKind {
+    #[default]
+    Interactive,
+    Agentic,
+    Abandoned,
+}
+
+impl TranscriptKind {
+    fn classify(user_msgs: u32, asst_msgs: u32) -> Self {
+        if user_msgs <= 2 {
+            if asst_msgs > 2 {
+                Self::Agentic
+            } else {
+                Self::Abandoned
+            }
+        } else {
+            Self::Interactive
+        }
+    }
+}
+
 /// Aggregated stats for a group (month×tool or project).
 #[derive(Default)]
 struct Aggregate {
     sessions: u32,
+    interactive_sessions: u32,
+    agentic_sessions: u32,
+    abandoned_sessions: u32,
     user_msgs: u32,
     asst_msgs: u32,
     tool_ok: u32,
@@ -43,6 +69,11 @@ struct Aggregate {
 impl Aggregate {
     fn add(&mut self, s: &TranscriptStats) {
         self.sessions += 1;
+        match s.kind {
+            TranscriptKind::Interactive => self.interactive_sessions += 1,
+            TranscriptKind::Agentic => self.agentic_sessions += 1,
+            TranscriptKind::Abandoned => self.abandoned_sessions += 1,
+        }
         self.user_msgs += s.user_msgs;
         self.asst_msgs += s.asst_msgs;
         self.tool_ok += s.tool_ok;
@@ -65,6 +96,9 @@ impl Aggregate {
 
     fn add_agg(&mut self, other: &Aggregate) {
         self.sessions += other.sessions;
+        self.interactive_sessions += other.interactive_sessions;
+        self.agentic_sessions += other.agentic_sessions;
+        self.abandoned_sessions += other.abandoned_sessions;
         self.user_msgs += other.user_msgs;
         self.asst_msgs += other.asst_msgs;
         self.tool_ok += other.tool_ok;
@@ -75,6 +109,13 @@ impl Aggregate {
         self.cache_write_tokens += other.cache_write_tokens;
         self.duration_secs += other.duration_secs;
         self.cost += other.cost;
+    }
+
+    fn kind_breakdown(&self) -> String {
+        format!(
+            "{}/{}/{}",
+            self.interactive_sessions, self.agentic_sessions, self.abandoned_sessions
+        )
     }
 }
 
@@ -224,6 +265,8 @@ fn parse_transcript_stats(
         }
     }
 
+    stats.kind = TranscriptKind::classify(stats.user_msgs, stats.asst_msgs);
+
     Ok(stats)
 }
 
@@ -264,13 +307,13 @@ fn print_regular(stats: &[TranscriptStats]) {
     for tool in &tools {
         print!(" {tool} |");
     }
-    println!(" Total | Tokens | Cost | Duration |");
+    println!(" Total | Kind (I/A/B) | Tokens | Cost | Duration |");
 
     print!("|-------|");
     for _ in &tools {
         print!(" ---: |");
     }
-    println!(" ---: | ---: | ---: | ---: |");
+    println!(" ---: | ---: | ---: | ---: | ---: |");
 
     // Rows
     let mut tool_totals: BTreeMap<String, Aggregate> = BTreeMap::new();
@@ -282,6 +325,7 @@ fn print_regular(stats: &[TranscriptStats]) {
         let mut month_tokens: u64 = 0;
         let mut month_cost: f64 = 0.0;
         let mut month_duration: i64 = 0;
+        let mut month_kind = Aggregate::default();
 
         for tool in &tools {
             let key = (month.clone(), tool.clone());
@@ -291,6 +335,7 @@ fn print_regular(stats: &[TranscriptStats]) {
                 month_tokens += agg.input_tokens + agg.output_tokens;
                 month_cost += agg.cost;
                 month_duration += agg.duration_secs;
+                month_kind.add_agg(agg);
                 tool_totals.entry(tool.clone()).or_default().add_agg(agg);
             } else {
                 print!(" - |");
@@ -298,13 +343,17 @@ fn print_regular(stats: &[TranscriptStats]) {
         }
 
         grand_total.sessions += month_sessions;
+        grand_total.interactive_sessions += month_kind.interactive_sessions;
+        grand_total.agentic_sessions += month_kind.agentic_sessions;
+        grand_total.abandoned_sessions += month_kind.abandoned_sessions;
         grand_total.input_tokens += month_tokens;
         grand_total.cost += month_cost;
         grand_total.duration_secs += month_duration;
 
         println!(
-            " {} | {} | {} | {} |",
+            " {} | {} | {} | {} | {} |",
             month_sessions,
+            month_kind.kind_breakdown(),
             format_tokens(month_tokens),
             pricing::format_cost(month_cost),
             format_duration(month_duration),
@@ -321,8 +370,9 @@ fn print_regular(stats: &[TranscriptStats]) {
         }
     }
     println!(
-        " **{}** | **{}** | **{}** | **{}** |",
+        " **{}** | **{}** | **{}** | **{}** | **{}** |",
         grand_total.sessions,
+        grand_total.kind_breakdown(),
         format_tokens(grand_total.input_tokens),
         pricing::format_cost(grand_total.cost),
         format_duration(grand_total.duration_secs),
@@ -337,16 +387,17 @@ fn print_daily(stats: &[TranscriptStats]) {
         by_date.entry(s.date.clone()).or_default().add(s);
     }
 
-    println!("| Date | Sessions | Tokens (in/out) | Cost | Duration |");
-    println!("|------|----------|-----------------|------|----------|");
+    println!("| Date | Sessions | Kind (I/A/B) | Tokens (in/out) | Cost | Duration |");
+    println!("|------|----------|--------------|-----------------|------|----------|");
 
     let mut total = Aggregate::default();
 
     for (date, agg) in &by_date {
         println!(
-            "| {} | {} | {}/{} | {} | {} |",
+            "| {} | {} | {} | {}/{} | {} | {} |",
             date,
             agg.sessions,
+            agg.kind_breakdown(),
             format_tokens(agg.input_tokens),
             format_tokens(agg.output_tokens),
             pricing::format_cost(agg.cost),
@@ -356,8 +407,9 @@ fn print_daily(stats: &[TranscriptStats]) {
     }
 
     println!(
-        "| **Total** | **{}** | **{}/{}** | **{}** | **{}** |",
+        "| **Total** | **{}** | **{}** | **{}/{}** | **{}** | **{}** |",
         total.sessions,
+        total.kind_breakdown(),
         format_tokens(total.input_tokens),
         format_tokens(total.output_tokens),
         pricing::format_cost(total.cost),
@@ -379,19 +431,20 @@ fn print_detailed(stats: &[TranscriptStats]) {
     }
 
     println!(
-        "| Project | Sessions | User | Asst | Tools (ok/fail) | Tokens (in/out) | Cost | Duration |"
+        "| Project | Sessions | Kind (I/A/B) | User | Asst | Tools (ok/fail) | Tokens (in/out) | Cost | Duration |"
     );
     println!(
-        "|---------|----------|------|------|-----------------|-----------------|------|----------|"
+        "|---------|----------|--------------|------|------|-----------------|-----------------|------|----------|"
     );
 
     let mut total = Aggregate::default();
 
     for (project, agg) in &by_project {
         println!(
-            "| {} | {} | {} | {} | {}/{} | {}/{} | {} | {} |",
+            "| {} | {} | {} | {} | {} | {}/{} | {}/{} | {} | {} |",
             project,
             agg.sessions,
+            agg.kind_breakdown(),
             agg.user_msgs,
             agg.asst_msgs,
             agg.tool_ok,
@@ -405,8 +458,9 @@ fn print_detailed(stats: &[TranscriptStats]) {
     }
 
     println!(
-        "| **Total** | **{}** | **{}** | **{}** | **{}/{}** | **{}/{}** | **{}** | **{}** |",
+        "| **Total** | **{}** | **{}** | **{}** | **{}** | **{}/{}** | **{}/{}** | **{}** | **{}** |",
         total.sessions,
+        total.kind_breakdown(),
         total.user_msgs,
         total.asst_msgs,
         total.tool_ok,
@@ -612,6 +666,22 @@ mod tests {
         assert_eq!(format_tokens(1_500_000), "1.5M");
     }
 
+    // --- TranscriptKind tests ---
+
+    #[test]
+    fn test_transcript_kind_classification_is_inclusive_at_two_user_messages() {
+        assert_eq!(TranscriptKind::classify(2, 3), TranscriptKind::Agentic);
+        assert_eq!(TranscriptKind::classify(2, 2), TranscriptKind::Abandoned);
+        assert_eq!(TranscriptKind::classify(1, 1), TranscriptKind::Abandoned);
+        assert_eq!(TranscriptKind::classify(0, 3), TranscriptKind::Agentic);
+    }
+
+    #[test]
+    fn test_transcript_kind_classification_interactive_after_two_user_messages() {
+        assert_eq!(TranscriptKind::classify(3, 0), TranscriptKind::Interactive);
+        assert_eq!(TranscriptKind::classify(3, 10), TranscriptKind::Interactive);
+    }
+
     // --- Aggregate tests ---
 
     #[test]
@@ -622,6 +692,7 @@ mod tests {
             date: "2025-01-15".to_string(),
             project: "/proj".to_string(),
             model: Some("opus-4.5".to_string()),
+            kind: TranscriptKind::Interactive,
             user_msgs: 5,
             asst_msgs: 10,
             tool_ok: 3,
@@ -634,6 +705,7 @@ mod tests {
         };
         agg.add(&stats);
         assert_eq!(agg.sessions, 1);
+        assert_eq!(agg.kind_breakdown(), "1/0/0");
         assert_eq!(agg.user_msgs, 5);
         assert_eq!(agg.input_tokens, 1000);
         // 1000 input @ $5/MTok + 500 output @ $25/MTok = $0.005 + $0.0125
@@ -641,19 +713,42 @@ mod tests {
     }
 
     #[test]
+    fn test_aggregate_kind_breakdown() {
+        let mut agg = Aggregate::default();
+        for kind in [
+            TranscriptKind::Interactive,
+            TranscriptKind::Agentic,
+            TranscriptKind::Agentic,
+            TranscriptKind::Abandoned,
+        ] {
+            agg.add(&TranscriptStats {
+                kind,
+                ..Default::default()
+            });
+        }
+
+        assert_eq!(agg.sessions, 4);
+        assert_eq!(agg.kind_breakdown(), "1/2/1");
+    }
+
+    #[test]
     fn test_aggregate_add_agg() {
         let mut a = Aggregate {
             sessions: 1,
+            interactive_sessions: 1,
             user_msgs: 5,
             ..Default::default()
         };
         let b = Aggregate {
             sessions: 2,
+            agentic_sessions: 1,
+            abandoned_sessions: 1,
             user_msgs: 10,
             ..Default::default()
         };
         a.add_agg(&b);
         assert_eq!(a.sessions, 3);
+        assert_eq!(a.kind_breakdown(), "1/1/1");
         assert_eq!(a.user_msgs, 15);
     }
 }

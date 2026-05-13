@@ -264,12 +264,17 @@ cassio summary -o ~/transcripts
 ```
 
 ```
-| Month | claude | codex | hermes | opencode | pi | Total | Tokens | Duration |
-|-------|--------|-------|----------|-------|--------|----------|
-| 2025-11 | 554 | 36 | 98 | 688 | 399.8M | 198h 30m |
-| 2025-12 | 1028 | 35 | 374 | 1437 | 32.1M | 331h 16m |
-| **Total** | **1582** | **71** | **472** | **2125** | **431.9M** | **529h 46m** |
+| Month | claude | codex | hermes | opencode | pi | Total | Kind (I/A/B) | Tokens | Cost | Duration |
+|-------| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 2025-11 | 554 | 36 | - | 98 | - | 688 | 154/116/418 | 408.5M | $1808 | 198h 17m |
+| 2025-12 | 1028 | 35 | - | 374 | - | 1437 | 332/341/764 | 32.1M | $4611 | 409h 4m |
+| **Total** | **1582** | **71** | - | **472** | - | **2125** | **486/457/1182** | **440.6M** | **$6419** | **607h 21m** |
 ```
+
+`Kind (I/A/B)` counts interactive, agentic, and abandoned transcripts. Sessions
+with at most two user messages are agentic when they have more than two assistant
+messages, abandoned otherwise; sessions with more than two user messages are
+interactive.
 
 For per-project detail:
 
@@ -278,11 +283,11 @@ cassio summary --detailed -o ~/transcripts
 ```
 
 ```
-| Project | Sessions | User | Asst | Tools (ok/fail) | Tokens (in/out) | Duration |
-|---------|----------|------|------|-----------------|-----------------|----------|
-| github/ianzepp/faber | 790 | 5069 | 13598 | 33864/2230 | 46.8M/6.1M | 163h 31m |
-| github/ianzepp/abbot | 923 | 3869 | 13920 | 34543/917 | 25.5M/4.5M | 173h 36m |
-| **Total** | ... | ... | ... | ... | ... | ... |
+| Project | Sessions | Kind (I/A/B) | User | Asst | Tools (ok/fail) | Tokens (in/out) | Cost | Duration |
+|---------|----------|--------------|------|------|-----------------|-----------------|------|----------|
+| github/ianzepp/faber | 790 | 510/180/100 | 5069 | 13598 | 33864/2230 | 46.8M/6.1M | $422 | 163h 31m |
+| github/ianzepp/abbot | 923 | 404/271/248 | 3869 | 13920 | 34543/917 | 25.5M/4.5M | $389 | 173h 36m |
+| **Total** | ... | ... | ... | ... | ... | ... | ... | ... |
 ```
 
 ## Daily compaction
@@ -438,7 +443,9 @@ Options:
   -o, --output <DIR>     Directory containing transcript files
 ```
 
-Regular mode shows a month × tool session count table with token and duration totals. `--detailed` shows a per-project breakdown with message counts, tool usage, and token spend.
+Regular mode shows a month × tool session count table with transcript-kind,
+token, cost, and duration totals. `--detailed` shows a per-project breakdown
+with transcript-kind, message counts, tool usage, and token spend.
 
 ## Search
 
