@@ -196,6 +196,12 @@ The resulting config file:
 ```toml
 output = "~/transcripts"
 format = "jsonl"
+model = "llama3.1"
+provider = "ollama"
+base_url = "http://127.0.0.1:18173/v1"
+max_input_bytes = 102400
+chunk_timeout_secs = 300
+max_retries = 3
 
 [embedding]
 auto_index = true
@@ -206,10 +212,6 @@ base_url = "http://127.0.0.1:11434"
 [git]
 commit = true
 push = true
-
-max_input_bytes = 102400
-chunk_timeout_secs = 300
-max_retries = 3
 
 # Override default source paths (optional)
 # [sources]
@@ -482,7 +484,8 @@ Options:
 
 Use Cassio index to build a local semantic embedding index for transcript
 artifacts. The first implementation supports Ollama's embedding API and defaults
-to the `cassio-embedding` model alias.
+to the `cassio-embedding` model alias. Override that with `embedding.model` in
+config or `--model` on the command line.
 
 ```sh
 cassio index -o ~/transcripts
