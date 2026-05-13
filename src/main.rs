@@ -44,7 +44,7 @@ use cassio::parser::Parser;
 use cassio::training::ParsedSession;
 
 #[derive(ClapParser)]
-#[command(name = "cassio", about = "AI transcript processor")]
+#[command(name = "cassio", about = "AI transcript processor", version)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,
