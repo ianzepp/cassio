@@ -208,6 +208,38 @@ fn find_codex_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
 /// batch path expects one path per output transcript, so DB rows are represented as
 /// virtual child paths: `state.db/<session_id>`.
 fn find_hermes_sessions(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
+    let mut roots = Vec::new();
+    collect_hermes_roots(dir, &mut roots);
+    if roots.is_empty() {
+        roots.push(dir.to_path_buf());
+    }
+
+    for root in roots {
+        find_hermes_sessions_in_root(&root, results);
+    }
+}
+
+fn collect_hermes_roots(dir: &Path, roots: &mut Vec<PathBuf>) {
+    for entry in WalkDir::new(dir)
+        .follow_links(false)
+        .into_iter()
+        .filter_entry(|entry| {
+            let name = entry.file_name().to_string_lossy();
+            !(name == ".git" || name == "node_modules" || name == "venv")
+        })
+        .filter_map(|e| e.ok())
+    {
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        if path.join("state.db").is_file() || path.join("sessions").is_dir() {
+            roots.push(path.to_path_buf());
+        }
+    }
+}
+
+fn find_hermes_sessions_in_root(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
     let mut db_session_ids = HashSet::new();
     let db_path = dir.join("state.db");
     if db_path.is_file()
@@ -357,9 +389,13 @@ fn derive_hermes_output_path(path: &Path) -> (String, String) {
     if path.extension().is_some_and(|e| e == "json")
         && let Ok(content) = std::fs::read_to_string(path)
         && let Ok(record) = serde_json::from_str::<serde_json::Value>(&content)
-        && let Some(ts) = record.get("session_start").and_then(|t| t.as_str())
     {
-        return derive_hermes_output_path_from_timestamp(ts);
+        if let Some(id) = record.get("session_id").and_then(|s| s.as_str()) {
+            return derive_hermes_output_path_from_id(id);
+        }
+        if let Some(ts) = record.get("session_start").and_then(|t| t.as_str()) {
+            return derive_hermes_output_path_from_timestamp(ts);
+        }
     }
 
     if let Some(name) = path.file_name().and_then(|n| n.to_str())
@@ -379,10 +415,13 @@ fn derive_hermes_output_path_from_id(id: &str) -> (String, String) {
         let hour = &id[9..11];
         let minute = &id[11..13];
         let second = &id[13..15];
-        return (
-            format!("{year}-{month}"),
-            format!("{year}-{month}-{day}T{hour}-{minute}-{second}-hermes.md"),
-        );
+        let suffix = sanitize_stem_suffix(id.get(16..).unwrap_or(""));
+        let stem = if suffix.is_empty() {
+            format!("{year}-{month}-{day}T{hour}-{minute}-{second}-hermes")
+        } else {
+            format!("{year}-{month}-{day}T{hour}-{minute}-{second}-{suffix}-hermes")
+        };
+        return (format!("{year}-{month}"), format!("{stem}.md"));
     }
     ("unknown".to_string(), format!("{id}-hermes.md"))
 }
@@ -394,6 +433,12 @@ fn derive_hermes_output_path_from_timestamp(ts: &str) -> (String, String) {
         return (folder, format!("{safe_ts}-hermes.md"));
     }
     ("unknown".to_string(), "unknown-hermes.md".to_string())
+}
+
+fn sanitize_stem_suffix(s: &str) -> String {
+    s.chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect()
 }
 
 fn derive_pi_output_path(path: &Path) -> (String, String) {
@@ -494,6 +539,34 @@ mod tests {
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, Tool::Pi);
         assert!(results[0].1.ends_with("session.jsonl"));
+
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_find_hermes_sessions_recurses_and_keeps_suffix() {
+        let dir = temp_dir("discover-hermes");
+        let root = dir.join("worker").join("var").join("lib").join("hermes");
+        fs::create_dir_all(root.join("sessions")).unwrap();
+        fs::write(
+            root.join("sessions")
+                .join("session_20260509_122904_e7da7d.json"),
+            r#"{"session_id":"20260509_122904_e7da7d","session_start":"2026-05-09T12:29:04","messages":[]}"#,
+        )
+        .unwrap();
+
+        let mut results = Vec::new();
+        find_hermes_sessions(&dir, &mut results);
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, Tool::Hermes);
+
+        let (folder, filename) = derive_output_path(Tool::Hermes, &results[0].1);
+        assert_eq!(folder, "2026-05");
+        assert_eq!(filename, "2026-05-09T12-29-04-e7da7d-hermes.md");
+
+        let (folder, filename) = derive_hermes_output_path_from_id("20260509_122904_e7da7d");
+        assert_eq!(folder, "2026-05");
+        assert_eq!(filename, "2026-05-09T12-29-04-e7da7d-hermes.md");
 
         fs::remove_dir_all(dir).ok();
     }

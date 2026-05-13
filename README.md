@@ -100,6 +100,8 @@ Cassio reads the native log format of each tool and normalizes everything into t
 | pi | JSONL (one record per line) | `~/.pi/agent/sessions` |
 
 Format detection is automatic based on file paths and content.
+Hermes source paths may point at a single Hermes state root or at a parent
+directory containing multiple `*/var/lib/hermes` roots.
 
 ## Usage
 
