@@ -100,8 +100,11 @@ Cassio reads the native log format of each tool and normalizes everything into t
 | pi | JSONL (one record per line) | `~/.pi/agent/sessions` |
 
 Format detection is automatic based on file paths and content.
-Hermes source paths may point at a single Hermes state root or at a parent
-directory containing multiple `*/var/lib/hermes` roots.
+Hermes ingestion supports both the current SQLite `state.db` layout and older
+`sessions/*.{json,jsonl}` exports. A Hermes source path may point at a single
+Hermes state root or at a parent directory containing multiple
+`*/var/lib/hermes` roots, which is useful for preserving worker or background
+agent transcripts under service directories.
 
 ## Usage
 
@@ -271,10 +274,11 @@ cassio summary -o ~/transcripts
 | **Total** | **1582** | **71** | - | **472** | - | **2125** | **486/457/1182** | **440.6M** | **$6419** | **607h 21m** |
 ```
 
-`Kind (I/A/B)` counts interactive, agentic, and abandoned transcripts. Sessions
-with at most two user messages are agentic when they have more than two assistant
-messages, abandoned otherwise; sessions with more than two user messages are
-interactive.
+`Kind (I/A/B)` counts interactive, agentic, and abandoned transcripts:
+
+- `Interactive`: more than two user messages
+- `Agentic`: at most two user messages and more than two assistant messages
+- `Abandoned`: at most two user messages and at most two assistant messages
 
 For per-project detail:
 
@@ -440,12 +444,14 @@ cassio summary [OPTIONS]
 
 Options:
       --detailed         Show per-project detailed stats instead of month×tool overview
+      --daily            Show per-day breakdown
   -o, --output <DIR>     Directory containing transcript files
 ```
 
 Regular mode shows a month × tool session count table with transcript-kind,
 token, cost, and duration totals. `--detailed` shows a per-project breakdown
-with transcript-kind, message counts, tool usage, and token spend.
+with transcript-kind, message counts, tool usage, and token spend. `--daily`
+shows the same transcript-kind, token, cost, and duration totals grouped by day.
 
 ## Search
 
