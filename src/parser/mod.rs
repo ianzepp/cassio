@@ -29,6 +29,7 @@
 
 pub mod claude;
 pub mod codex;
+pub mod hermes;
 pub mod opencode;
 pub mod pi;
 
@@ -70,6 +71,10 @@ pub fn detect_parser(path: &Path) -> Result<Box<dyn Parser>, CassioError> {
         return Ok(Box::new(codex::CodexParser));
     }
 
+    if path_str.contains(".hermes") || path_str.contains("/hermes/") {
+        return Ok(Box::new(hermes::HermesParser));
+    }
+
     if path_str.contains("local-agent-mode-sessions") {
         return Ok(Box::new(claude::ClaudeParser));
     }
@@ -90,6 +95,9 @@ pub fn detect_parser(path: &Path) -> Result<Box<dyn Parser>, CassioError> {
         }
         if first_line.contains("\"session_meta\"") || first_line.contains("\"response_item\"") {
             return Ok(Box::new(codex::CodexParser));
+        }
+        if first_line.contains("\"platform\"") && first_line.contains("\"model\"") {
+            return Ok(Box::new(hermes::HermesParser));
         }
         if first_line.contains("\"type\":\"session\"") && first_line.contains("\"cwd\"") {
             return Ok(Box::new(pi::PiParser));
@@ -114,6 +122,8 @@ pub fn detect_parser_from_content(first_line: &str) -> Box<dyn Parser> {
         Box::new(claude::ClaudeParser)
     } else if first_line.contains("\"session_meta\"") || first_line.contains("\"response_item\"") {
         Box::new(codex::CodexParser)
+    } else if first_line.contains("\"platform\"") && first_line.contains("\"model\"") {
+        Box::new(hermes::HermesParser)
     } else if first_line.contains("\"type\":\"session\"") && first_line.contains("\"cwd\"") {
         Box::new(pi::PiParser)
     } else {

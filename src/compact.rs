@@ -1105,7 +1105,7 @@ fn is_session_transcript_name(name: &str) -> bool {
     };
 
     let tool = stem.rsplit('-').next().unwrap_or("");
-    matches!(tool, "claude" | "codex" | "opencode" | "pi")
+    matches!(tool, "claude" | "codex" | "hermes" | "opencode" | "pi")
 }
 
 fn is_daily_summary_name(name: &str) -> bool {

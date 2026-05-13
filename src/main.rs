@@ -865,7 +865,7 @@ fn run_stdin(format: OutputFormat, filter_dir: Option<&Path>) -> Result<(), Cass
 
 /// Process all session files in a directory, writing formatted output to `--output`.
 ///
-/// The directory is auto-detected for tool type (Claude, Codex, OpenCode, or pi)
+/// The directory is auto-detected for tool type (Claude, Codex, Hermes, OpenCode, or pi)
 /// based on its path. Files whose output is already newer than the input are
 /// skipped unless `--force` is set.
 fn run_batch_mode(
@@ -927,6 +927,7 @@ fn run_all_mode(cli: &Cli, config: &Config, format: OutputFormat) -> Result<(), 
             "  Claude Desktop: ~/Library/Application Support/Claude/local-agent-mode-sessions"
         );
         eprintln!("  Codex:          ~/.codex/sessions");
+        eprintln!("  Hermes:         ~/.hermes");
         eprintln!("  OpenCode:       ~/.local/share/opencode/storage");
         eprintln!("  pi:             ~/.pi/agent/sessions");
         return Err(CassioError::Other("No sources found".into()));
@@ -1030,6 +1031,7 @@ fn process_file_list(
         let parser: Box<dyn Parser> = match tool {
             Tool::Claude | Tool::ClaudeDesktop => Box::new(cassio::parser::claude::ClaudeParser),
             Tool::Codex => Box::new(cassio::parser::codex::CodexParser),
+            Tool::Hermes => Box::new(cassio::parser::hermes::HermesParser),
             Tool::OpenCode => Box::new(cassio::parser::opencode::OpenCodeParser),
             Tool::Pi => Box::new(cassio::parser::pi::PiParser),
         };

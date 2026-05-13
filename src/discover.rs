@@ -16,6 +16,7 @@
 //! Each tool has a distinct file layout:
 //! - **Claude Code**: any `*.jsonl` file (excluding `.bak` variants)
 //! - **Codex**: only `rollout-*.jsonl` files (other `.jsonl` files are internal state)
+//! - **Hermes**: `state.db` sessions plus legacy `~/.hermes/sessions/*.{json,jsonl}`
 //! - **OpenCode**: session IDs are directories named `ses_*` under `message/`
 //! - **pi**: any `*.jsonl` file under `~/.pi/agent/sessions/`
 //!
@@ -31,8 +32,10 @@
 //! with no timestamp. This means the first time a batch runs it pays a small extra
 //! disk read per OpenCode session. The `main.rs` handles this as a special case.
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use rusqlite::{Connection, OpenFlags};
 use walkdir::WalkDir;
 
 use crate::ast::Tool;
@@ -51,6 +54,7 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
             home.join("Library/Application Support/Claude/local-agent-mode-sessions")
         }
         Tool::Codex => home.join(".codex/sessions"),
+        Tool::Hermes => home.join(".hermes"),
         Tool::OpenCode => home.join(".local/share/opencode/storage"),
         Tool::Pi => home.join(".pi/agent/sessions"),
     };
@@ -66,6 +70,7 @@ pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
         Tool::Claude,
         Tool::ClaudeDesktop,
         Tool::Codex,
+        Tool::Hermes,
         Tool::OpenCode,
         Tool::Pi,
     ];
@@ -89,6 +94,7 @@ pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<
         Tool::Claude,
         Tool::ClaudeDesktop,
         Tool::Codex,
+        Tool::Hermes,
         Tool::OpenCode,
         Tool::Pi,
     ];
@@ -100,6 +106,7 @@ pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<
                 Tool::Claude => s.claude_path(),
                 Tool::ClaudeDesktop => s.claude_desktop_path(),
                 Tool::Codex => s.codex_path(),
+                Tool::Hermes => s.hermes_path(),
                 Tool::OpenCode => s.opencode_path(),
                 Tool::Pi => s.pi_path(),
             });
@@ -128,6 +135,9 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
         Some(Tool::Codex) => {
             find_codex_files(dir, &mut results);
         }
+        Some(Tool::Hermes) => {
+            find_hermes_sessions(dir, &mut results);
+        }
         Some(Tool::OpenCode) => {
             find_opencode_sessions(dir, &mut results);
         }
@@ -139,6 +149,8 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
             let dir_str = dir.to_string_lossy();
             if dir_str.contains(".codex") || dir_str.contains("codex") {
                 find_codex_files(dir, &mut results);
+            } else if dir_str.contains(".hermes") || dir_str.contains("hermes") {
+                find_hermes_sessions(dir, &mut results);
             } else if dir_str.contains("opencode") {
                 find_opencode_sessions(dir, &mut results);
             } else if dir_str.contains(".pi/agent/sessions")
@@ -190,6 +202,61 @@ fn find_codex_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
     }
 }
 
+/// Collect Hermes sessions from SQLite state and legacy on-disk session files.
+///
+/// Hermes' current store keeps many conversations in one SQLite database. Cassio's
+/// batch path expects one path per output transcript, so DB rows are represented as
+/// virtual child paths: `state.db/<session_id>`.
+fn find_hermes_sessions(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
+    let mut db_session_ids = HashSet::new();
+    let db_path = dir.join("state.db");
+    if db_path.is_file()
+        && let Ok(conn) = Connection::open_with_flags(&db_path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        && let Ok(mut stmt) = conn.prepare(
+            "SELECT id FROM sessions \
+             WHERE EXISTS (SELECT 1 FROM messages WHERE messages.session_id = sessions.id) \
+             ORDER BY started_at",
+        )
+        && let Ok(rows) = stmt.query_map([], |row| row.get::<_, String>(0))
+    {
+        for id in rows.filter_map(|r| r.ok()) {
+            db_session_ids.insert(id.clone());
+            results.push((Tool::Hermes, db_path.join(id)));
+        }
+    }
+
+    let sessions_dir = dir.join("sessions");
+    if sessions_dir.is_dir() {
+        for entry in WalkDir::new(&sessions_dir)
+            .max_depth(1)
+            .into_iter()
+            .filter_map(|e| e.ok())
+        {
+            let path = entry.path();
+            let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+                continue;
+            };
+            if let Some(id) = legacy_hermes_session_id(name)
+                && db_session_ids.contains(id)
+            {
+                continue;
+            }
+            let is_json =
+                path.extension().is_some_and(|e| e == "json") && name.starts_with("session_");
+            let is_jsonl = path.extension().is_some_and(|e| e == "jsonl");
+            if is_json || is_jsonl {
+                results.push((Tool::Hermes, path.to_path_buf()));
+            }
+        }
+    }
+}
+
+fn legacy_hermes_session_id(name: &str) -> Option<&str> {
+    name.strip_prefix("session_")
+        .and_then(|s| s.strip_suffix(".json"))
+        .or_else(|| name.strip_suffix(".jsonl"))
+}
+
 /// Collect OpenCode session directories under `dir`.
 ///
 /// OpenCode's storage layout is fragmented: session metadata lives under
@@ -228,6 +295,7 @@ pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
     match tool {
         Tool::Claude | Tool::ClaudeDesktop => derive_claude_output_path(path),
         Tool::Codex => derive_codex_output_path(path),
+        Tool::Hermes => derive_hermes_output_path(path),
         Tool::Pi => derive_pi_output_path(path),
         Tool::OpenCode => {
             // For OpenCode we need the session data; use a placeholder
@@ -278,6 +346,54 @@ fn derive_codex_output_path(path: &Path) -> (String, String) {
         }
     }
     ("unknown".to_string(), "unknown-codex.md".to_string())
+}
+
+fn derive_hermes_output_path(path: &Path) -> (String, String) {
+    let path_str = path.to_string_lossy();
+    if let Some((_, id)) = path_str.split_once("state.db/") {
+        return derive_hermes_output_path_from_id(id);
+    }
+
+    if path.extension().is_some_and(|e| e == "json")
+        && let Ok(content) = std::fs::read_to_string(path)
+        && let Ok(record) = serde_json::from_str::<serde_json::Value>(&content)
+        && let Some(ts) = record.get("session_start").and_then(|t| t.as_str())
+    {
+        return derive_hermes_output_path_from_timestamp(ts);
+    }
+
+    if let Some(name) = path.file_name().and_then(|n| n.to_str())
+        && let Some(id) = legacy_hermes_session_id(name)
+    {
+        return derive_hermes_output_path_from_id(id);
+    }
+
+    ("unknown".to_string(), "unknown-hermes.md".to_string())
+}
+
+fn derive_hermes_output_path_from_id(id: &str) -> (String, String) {
+    if id.len() >= 15 {
+        let year = &id[0..4];
+        let month = &id[4..6];
+        let day = &id[6..8];
+        let hour = &id[9..11];
+        let minute = &id[11..13];
+        let second = &id[13..15];
+        return (
+            format!("{year}-{month}"),
+            format!("{year}-{month}-{day}T{hour}-{minute}-{second}-hermes.md"),
+        );
+    }
+    ("unknown".to_string(), format!("{id}-hermes.md"))
+}
+
+fn derive_hermes_output_path_from_timestamp(ts: &str) -> (String, String) {
+    if ts.len() >= 19 {
+        let folder = ts.get(..7).unwrap_or("unknown").to_string();
+        let safe_ts = ts[..19].replace(':', "-");
+        return (folder, format!("{safe_ts}-hermes.md"));
+    }
+    ("unknown".to_string(), "unknown-hermes.md".to_string())
 }
 
 fn derive_pi_output_path(path: &Path) -> (String, String) {

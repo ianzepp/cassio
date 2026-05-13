@@ -2,9 +2,9 @@
 //!
 //! # Architecture overview
 //!
-//! Cassio converts AI coding session logs from three different tools (Claude Code,
-//! OpenAI Codex, and OpenCode) into a unified intermediate representation before
-//! formatting. This module defines that representation — the AST layer.
+//! Cassio converts AI coding session logs from different tools into a unified
+//! intermediate representation before formatting. This module defines that
+//! representation — the AST layer.
 //!
 //! ```text
 //! Input (JSONL/JSON) → Parser → Session (AST) → Formatter → Output (.md / .jsonl)
@@ -49,6 +49,7 @@ pub enum Tool {
     #[serde(rename = "claude_desktop")]
     ClaudeDesktop,
     Codex,
+    Hermes,
     OpenCode,
     Pi,
 }
@@ -60,6 +61,7 @@ impl std::fmt::Display for Tool {
             // WHY: ClaudeDesktop is an internal distinction; users always call it "claude"
             Tool::ClaudeDesktop => write!(f, "claude"),
             Tool::Codex => write!(f, "codex"),
+            Tool::Hermes => write!(f, "hermes"),
             Tool::OpenCode => write!(f, "opencode"),
             Tool::Pi => write!(f, "pi"),
         }
@@ -99,7 +101,7 @@ pub struct SessionMetadata {
     pub git_branch: Option<String>,
     /// Final model used in the session; updated as model-change events are parsed.
     pub model: Option<String>,
-    /// Human-readable session title; only provided by OpenCode.
+    /// Human-readable session title, if the source records one.
     pub title: Option<String>,
 }
 
@@ -225,7 +227,7 @@ pub struct SessionStats {
     /// Wall-clock duration in seconds, computed as (last_timestamp - first_timestamp).
     /// `None` when the log contains fewer than two timestamped records.
     pub duration_seconds: Option<i64>,
-    /// Total session cost in USD; only available from OpenCode logs.
+    /// Total session cost in USD, if the source records one.
     pub cost: Option<f64>,
 }
 
@@ -307,6 +309,7 @@ mod tests {
     fn test_tool_display() {
         assert_eq!(Tool::Claude.to_string(), "claude");
         assert_eq!(Tool::Codex.to_string(), "codex");
+        assert_eq!(Tool::Hermes.to_string(), "hermes");
         assert_eq!(Tool::OpenCode.to_string(), "opencode");
         assert_eq!(Tool::Pi.to_string(), "pi");
     }

@@ -143,7 +143,9 @@ fn parse_session_filename(name: &str) -> Option<(String, String)> {
 
     let tool_name = stem.rsplit('-').next()?;
     match tool_name {
-        "claude" | "codex" | "opencode" | "pi" => Some((date.to_string(), tool_name.to_string())),
+        "claude" | "codex" | "hermes" | "opencode" | "pi" => {
+            Some((date.to_string(), tool_name.to_string()))
+        }
         _ => None,
     }
 }

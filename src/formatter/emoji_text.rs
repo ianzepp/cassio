@@ -93,6 +93,7 @@ fn format_metadata(meta: &SessionMetadata, w: &mut dyn Write) -> Result<(), Cass
                 writeln!(w, "{EMOJI_META} CLI: codex {version}")?;
             }
         }
+        Tool::Hermes => {}
         Tool::OpenCode => {
             if let Some(ref title) = meta.title {
                 writeln!(w, "{EMOJI_META} Title: {title}")?;
@@ -200,6 +201,7 @@ fn format_summary(
     // Tool calls label varies by tool
     let tool_label = match metadata.tool {
         Tool::Codex => "Function calls",
+        Tool::Hermes => "Tool calls",
         _ => "Tool calls",
     };
     writeln!(

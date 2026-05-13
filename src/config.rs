@@ -59,6 +59,7 @@ pub struct SourcesConfig {
     pub claude: Option<String>,
     pub claude_desktop: Option<String>,
     pub codex: Option<String>,
+    pub hermes: Option<String>,
     pub opencode: Option<String>,
     pub pi: Option<String>,
 }
@@ -323,6 +324,7 @@ pub fn init() -> Result<(), CassioError> {
 # claude = "~/.claude/projects"
 # claude_desktop = "~/Library/Application Support/Claude/local-agent-mode-sessions"
 # codex = "~/.codex/sessions"
+# hermes = "~/.hermes"
 # opencode = "~/.local/share/opencode/storage"
 # pi = "~/.pi/agent/sessions"
 "#;
@@ -511,6 +513,11 @@ impl SourcesConfig {
     /// Resolve the configured Codex source path, expanding `~`.
     pub fn codex_path(&self) -> Option<PathBuf> {
         self.codex.as_deref().map(expand_tilde)
+    }
+
+    /// Resolve the configured Hermes source path, expanding `~`.
+    pub fn hermes_path(&self) -> Option<PathBuf> {
+        self.hermes.as_deref().map(expand_tilde)
     }
 
     /// Resolve the configured Claude Desktop source path, expanding `~`.
