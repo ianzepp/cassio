@@ -1,9 +1,15 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
+use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use chrono::Utc;
+use llama_cpp_2::context::params::{LlamaAttentionType, LlamaContextParams, LlamaPoolingType};
+use llama_cpp_2::llama_backend::LlamaBackend;
+use llama_cpp_2::llama_batch::LlamaBatch;
+use llama_cpp_2::model::{AddBos, LlamaModel, params::LlamaModelParams};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -12,10 +18,12 @@ use walkdir::WalkDir;
 use crate::error::CassioError;
 use crate::search::{SearchArtifact, artifact_for_path, strip_path_noise};
 
-const DEFAULT_PROVIDER: &str = "ollama";
-const DEFAULT_MODEL: &str = "cassio-embedding";
-const DEFAULT_BASE_URL: &str = "http://127.0.0.1:11434";
+const DEFAULT_PROVIDER: &str = "builtin";
+const DEFAULT_MODEL: &str = "nomic-embed-text-v1.5.Q4_K_M";
+const DEFAULT_BASE_URL: &str = "";
 const DEFAULT_CHUNK_CHARS: usize = 1_800;
+const BUILTIN_MODEL_BYTES: &[u8] = include_bytes!("../assets/nomic-embed-text-v1.5.Q4_K_M.gguf");
+const BUILTIN_MODEL_FILE: &str = "nomic-embed-text-v1.5.Q4_K_M.gguf";
 
 #[derive(Debug, Clone)]
 pub struct IndexOptions {
@@ -546,12 +554,106 @@ pub(crate) fn embed_texts(
 ) -> Result<Vec<Vec<f32>>, CassioError> {
     let timeout = Duration::from_secs(timeout_secs);
     match provider {
+        "builtin" => embed_builtin(input),
         "ollama" => embed_ollama(base_url, model, input, timeout),
         "openai" | "lmstudio" => embed_openai_compatible(base_url, model, input, timeout),
         _ => Err(CassioError::Other(format!(
-            "Unsupported embedding provider: {provider} (supported: ollama, openai, lmstudio)"
+            "Unsupported embedding provider: {provider} (supported: builtin, ollama, openai, lmstudio)"
         ))),
     }
+}
+
+fn embed_builtin(input: &[&str]) -> Result<Vec<Vec<f32>>, CassioError> {
+    let backend = builtin_backend()?;
+    let model_path = builtin_model_path()?;
+    let model = LlamaModel::load_from_file(backend, &model_path, &LlamaModelParams::default())
+        .map_err(|e| CassioError::Other(format!("Builtin embedding model load failed: {e}")))?;
+    let params = LlamaContextParams::default()
+        .with_embeddings(true)
+        .with_pooling_type(LlamaPoolingType::Mean)
+        .with_attention_type(LlamaAttentionType::NonCausal)
+        .with_n_ctx(NonZeroU32::new(2048))
+        .with_n_batch(2048)
+        .with_n_ubatch(2048)
+        .with_n_seq_max(1);
+    let mut context = model
+        .new_context(backend, params)
+        .map_err(|e| CassioError::Other(format!("Builtin embedding context load failed: {e}")))?;
+
+    let mut out = Vec::with_capacity(input.len());
+    for text in input {
+        let tokens = model
+            .str_to_token(text, AddBos::Always)
+            .map_err(|e| CassioError::Other(format!("Builtin embedding tokenize failed: {e}")))?;
+        if tokens.is_empty() {
+            return Err(CassioError::Other(
+                "Builtin embedding tokenizer returned no tokens".into(),
+            ));
+        }
+        if tokens.len() > context.n_batch() as usize {
+            return Err(CassioError::Other(format!(
+                "Builtin embedding input has {} tokens, exceeding batch size {}",
+                tokens.len(),
+                context.n_batch()
+            )));
+        }
+
+        context.clear_kv_cache();
+        let mut batch = LlamaBatch::new(tokens.len(), 1);
+        for (pos, token) in tokens.iter().enumerate() {
+            batch
+                .add(*token, pos as i32, &[0], true)
+                .map_err(|e| CassioError::Other(format!("Builtin embedding batch failed: {e}")))?;
+        }
+        context
+            .encode(&mut batch)
+            .map_err(|e| CassioError::Other(format!("Builtin embedding encode failed: {e}")))?;
+        let embedding = context
+            .embeddings_seq_ith(0)
+            .map_err(|e| CassioError::Other(format!("Builtin embedding read failed: {e}")))?;
+        out.push(normalize_l2(embedding));
+    }
+    Ok(out)
+}
+
+fn builtin_backend() -> Result<&'static LlamaBackend, CassioError> {
+    static BACKEND: OnceLock<LlamaBackend> = OnceLock::new();
+    if let Some(backend) = BACKEND.get() {
+        return Ok(backend);
+    }
+
+    let mut backend = LlamaBackend::init().map_err(|e| {
+        CassioError::Other(format!(
+            "Builtin embedding backend initialization failed: {e}"
+        ))
+    })?;
+    backend.void_logs();
+    let _ = BACKEND.set(backend);
+    BACKEND
+        .get()
+        .ok_or_else(|| CassioError::Other("Builtin embedding backend unavailable".into()))
+}
+
+fn builtin_model_path() -> Result<PathBuf, CassioError> {
+    let base = dirs::cache_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(std::env::temp_dir);
+    let dir = base.join("cassio").join("models");
+    fs::create_dir_all(&dir)?;
+    let path = dir.join(BUILTIN_MODEL_FILE);
+    let current_len = fs::metadata(&path).map(|meta| meta.len()).ok();
+    if current_len != Some(BUILTIN_MODEL_BYTES.len() as u64) {
+        fs::write(&path, BUILTIN_MODEL_BYTES)?;
+    }
+    Ok(path)
+}
+
+fn normalize_l2(values: &[f32]) -> Vec<f32> {
+    let norm = values.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if norm == 0.0 {
+        return values.to_vec();
+    }
+    values.iter().map(|value| value / norm).collect()
 }
 
 fn embed_ollama(

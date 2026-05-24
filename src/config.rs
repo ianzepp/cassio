@@ -70,12 +70,13 @@ pub struct EmbeddingConfig {
     /// Update the semantic index after transcript generation completes.
     #[serde(default)]
     pub auto_index: bool,
-    /// Embedding provider: `"ollama"` or an OpenAI-compatible provider.
+    /// Embedding provider: `"builtin"`, `"ollama"`, or an OpenAI-compatible provider.
     pub provider: Option<String>,
     /// Embedding model name passed to the provider.
     pub model: Option<String>,
-    /// Provider base URL, such as Ollama `http://127.0.0.1:11434`
-    /// or OpenAI-compatible `http://127.0.0.1:1234/v1`.
+    /// Provider base URL. Unused for `"builtin"`; otherwise use values such as
+    /// Ollama `http://127.0.0.1:11434` or OpenAI-compatible
+    /// `http://127.0.0.1:1234/v1`.
     pub base_url: Option<String>,
     /// Include training JSON metadata in automatic index updates.
     #[serde(default)]

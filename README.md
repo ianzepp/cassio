@@ -211,9 +211,8 @@ max_retries = 3
 
 [embedding]
 auto_index = true
-provider = "openai"
-model = "text-embedding-nomic-embed-text-v1.5"
-base_url = "http://127.0.0.1:1234/v1"
+provider = "builtin"
+model = "nomic-embed-text-v1.5.Q4_K_M"
 
 [git]
 commit = true
@@ -243,9 +242,9 @@ CLI flags always override config values. With the config above, `cassio --all` j
 | `chunk_timeout_secs` | integer | `300` | Per-call timeout for compaction requests |
 | `max_retries` | integer | `3` | Maximum retries for each compaction request |
 | `embedding.auto_index` | bool | `false` | Update the semantic index after transcript generation |
-| `embedding.provider` | string | `ollama` | Embedding provider for `cassio index`: `ollama`, `openai`, or `lmstudio` |
-| `embedding.model` | string | `cassio-embedding` | Embedding model name |
-| `embedding.base_url` | string | `http://127.0.0.1:11434` | Embedding provider base URL |
+| `embedding.provider` | string | `builtin` | Embedding provider for `cassio index`: `builtin`, `ollama`, `openai`, or `lmstudio` |
+| `embedding.model` | string | `nomic-embed-text-v1.5.Q4_K_M` | Embedding model name |
+| `embedding.base_url` | string | *(none)* | Embedding provider base URL; unused for `builtin` |
 | `embedding.include_training` | bool | `false` | Include training JSON metadata in automatic indexing |
 | `embedding.include_paths` | bool | `false` | Let path-heavy tool lines influence automatic indexing |
 | `embedding.batch_size` | integer | `16` | Number of chunks per embedding request |
@@ -495,7 +494,7 @@ Options:
       --regex                 Treat query as a regular expression
       --case-sensitive        Use case-sensitive matching
       --semantic              Use the semantic embedding index instead of lexical matching
-      --provider <PROVIDER>   Semantic embedding provider: ollama, openai, or lmstudio
+      --provider <PROVIDER>   Semantic embedding provider: builtin, ollama, openai, or lmstudio
       --model <MODEL>         Semantic embedding model name
       --base-url <URL>        Semantic embedding provider base URL
       --timeout <SECONDS>     Semantic query embedding timeout, in seconds
@@ -506,10 +505,10 @@ Options:
 ## Index
 
 Use Cassio index to build a local semantic embedding index for transcript
-artifacts. Cassio supports Ollama's embedding API and OpenAI-compatible
-`/v1/embeddings` endpoints such as LM Studio or llama.cpp. It defaults to the
-Ollama `cassio-embedding` model alias; override provider, model, and base URL in
-config or on the command line.
+artifacts. Cassio includes a bundled Nomic embedding GGUF and an in-process
+llama.cpp runtime for the default `builtin` provider. It can also use Ollama's
+embedding API and OpenAI-compatible `/v1/embeddings` endpoints such as LM Studio
+or llama.cpp when you explicitly choose those providers.
 
 ```sh
 cassio index -o ~/transcripts
@@ -545,9 +544,9 @@ Options:
   -m, --month <YYYY-MM>       Restrict indexing to one month directory
       --include-training      Include noisy *.training.json files after markdown artifacts
       --include-paths         Let file paths and tool path arguments influence embedding text
-      --provider <PROVIDER>   Embedding provider: ollama, openai, or lmstudio
-      --model <MODEL>         Embedding model name [default: cassio-embedding]
-      --base-url <URL>        Embedding provider base URL [default: http://127.0.0.1:11434]
+      --provider <PROVIDER>   Embedding provider: builtin, ollama, openai, or lmstudio
+      --model <MODEL>         Embedding model name [default: nomic-embed-text-v1.5.Q4_K_M]
+      --base-url <URL>        Embedding provider base URL [unused for builtin]
       --batch-size <N>        Number of chunks to embed per provider request [default: 16]
       --timeout <SECONDS>     Per-request embedding timeout, in seconds [default: 120]
   -o, --output <DIR>          Directory containing transcript files

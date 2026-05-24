@@ -141,7 +141,7 @@ enum Command {
         /// Use the semantic embedding index instead of line-level lexical matching
         #[arg(long)]
         semantic: bool,
-        /// Semantic embedding provider: ollama, openai, or lmstudio
+        /// Semantic embedding provider: builtin, ollama, openai, or lmstudio
         #[arg(long)]
         provider: Option<String>,
         /// Semantic embedding model name
@@ -168,7 +168,7 @@ enum Command {
         /// Let file paths and tool path arguments influence embedding text
         #[arg(long)]
         include_paths: bool,
-        /// Embedding provider: ollama, openai, or lmstudio
+        /// Embedding provider: builtin, ollama, openai, or lmstudio
         #[arg(long)]
         provider: Option<String>,
         /// Embedding model name
