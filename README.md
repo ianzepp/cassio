@@ -211,9 +211,9 @@ max_retries = 3
 
 [embedding]
 auto_index = true
-provider = "ollama"
-model = "cassio-embedding"
-base_url = "http://127.0.0.1:11434"
+provider = "openai"
+model = "text-embedding-nomic-embed-text-v1.5"
+base_url = "http://127.0.0.1:1234/v1"
 
 [git]
 commit = true
@@ -243,7 +243,7 @@ CLI flags always override config values. With the config above, `cassio --all` j
 | `chunk_timeout_secs` | integer | `300` | Per-call timeout for compaction requests |
 | `max_retries` | integer | `3` | Maximum retries for each compaction request |
 | `embedding.auto_index` | bool | `false` | Update the semantic index after transcript generation |
-| `embedding.provider` | string | `ollama` | Embedding provider for `cassio index` |
+| `embedding.provider` | string | `ollama` | Embedding provider for `cassio index`: `ollama`, `openai`, or `lmstudio` |
 | `embedding.model` | string | `cassio-embedding` | Embedding model name |
 | `embedding.base_url` | string | `http://127.0.0.1:11434` | Embedding provider base URL |
 | `embedding.include_training` | bool | `false` | Include training JSON metadata in automatic indexing |
@@ -478,9 +478,10 @@ file names or path text. The command uses config `output` when `-o` is omitted.
 
 Use `--semantic` after running `cassio index` to retrieve conceptually related
 chunks from the semantic index. Semantic search embeds the query with the
-configured `[embedding]` provider/model and ranks indexed chunks by cosine
-similarity. It still honors `--month`, `--summaries-only`, `--include-training`,
-`--limit`, and `--json`.
+configured `[embedding]` provider/model, or the semantic provider/model passed
+on the command line, and ranks indexed chunks by cosine similarity. It still
+honors `--month`, `--summaries-only`, `--include-training`, `--limit`, and
+`--json`.
 
 ```
 cassio search [OPTIONS] <QUERY>
@@ -494,6 +495,10 @@ Options:
       --regex                 Treat query as a regular expression
       --case-sensitive        Use case-sensitive matching
       --semantic              Use the semantic embedding index instead of lexical matching
+      --provider <PROVIDER>   Semantic embedding provider: ollama, openai, or lmstudio
+      --model <MODEL>         Semantic embedding model name
+      --base-url <URL>        Semantic embedding provider base URL
+      --timeout <SECONDS>     Semantic query embedding timeout, in seconds
       --json                  Emit JSON instead of text
   -o, --output <DIR>          Directory containing transcript files
 ```
@@ -501,14 +506,16 @@ Options:
 ## Index
 
 Use Cassio index to build a local semantic embedding index for transcript
-artifacts. The first implementation supports Ollama's embedding API and defaults
-to the `cassio-embedding` model alias. Override that with `embedding.model` in
-config or `--model` on the command line.
+artifacts. Cassio supports Ollama's embedding API and OpenAI-compatible
+`/v1/embeddings` endpoints such as LM Studio or llama.cpp. It defaults to the
+Ollama `cassio-embedding` model alias; override provider, model, and base URL in
+config or on the command line.
 
 ```sh
 cassio index -o ~/transcripts
 cassio index --month 2026-04
 cassio index --include-training --batch-size 8
+cassio index --provider openai --base-url http://127.0.0.1:1234/v1 --model text-embedding-nomic-embed-text-v1.5
 ```
 
 To keep the semantic index fresh during normal transcript generation, enable
@@ -538,7 +545,7 @@ Options:
   -m, --month <YYYY-MM>       Restrict indexing to one month directory
       --include-training      Include noisy *.training.json files after markdown artifacts
       --include-paths         Let file paths and tool path arguments influence embedding text
-      --provider <PROVIDER>   Embedding provider; currently only ollama is supported
+      --provider <PROVIDER>   Embedding provider: ollama, openai, or lmstudio
       --model <MODEL>         Embedding model name [default: cassio-embedding]
       --base-url <URL>        Embedding provider base URL [default: http://127.0.0.1:11434]
       --batch-size <N>        Number of chunks to embed per provider request [default: 16]

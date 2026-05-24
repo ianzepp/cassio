@@ -141,6 +141,18 @@ enum Command {
         /// Use the semantic embedding index instead of line-level lexical matching
         #[arg(long)]
         semantic: bool,
+        /// Semantic embedding provider: ollama, openai, or lmstudio
+        #[arg(long)]
+        provider: Option<String>,
+        /// Semantic embedding model name
+        #[arg(long)]
+        model: Option<String>,
+        /// Semantic embedding provider base URL
+        #[arg(long)]
+        base_url: Option<String>,
+        /// Semantic query embedding timeout, in seconds
+        #[arg(long)]
+        timeout: Option<u64>,
         /// Emit JSON instead of text
         #[arg(long)]
         json: bool,
@@ -156,7 +168,7 @@ enum Command {
         /// Let file paths and tool path arguments influence embedding text
         #[arg(long)]
         include_paths: bool,
-        /// Embedding provider; currently only ollama is supported
+        /// Embedding provider: ollama, openai, or lmstudio
         #[arg(long)]
         provider: Option<String>,
         /// Embedding model name
@@ -302,6 +314,10 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             regex,
             case_sensitive,
             semantic,
+            provider,
+            model,
+            base_url,
+            timeout,
             json,
         }) => {
             let config = if cli.detached {
@@ -321,7 +337,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             let semantic_options = if semantic {
                 let embedding = config.embedding.as_ref();
                 let index_options = index_options_from_config(
-                    embedding, None, false, false, None, None, None, None, None,
+                    embedding, None, false, false, None, timeout, provider, model, base_url,
                 );
                 Some(cassio::search::SemanticSearchOptions {
                     provider: index_options.provider,

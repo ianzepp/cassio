@@ -468,13 +468,6 @@ fn embed_and_store(
         eprintln!("index: all chunks already indexed; no embeddings needed");
         return Ok(0);
     }
-    if options.provider != "ollama" {
-        return Err(CassioError::Other(format!(
-            "Unsupported index provider: {} (supported: ollama)",
-            options.provider
-        )));
-    }
-
     let batch_size = options.batch_size.max(1);
     let total_batches = chunks.len().div_ceil(batch_size);
     eprintln!(
@@ -500,11 +493,12 @@ fn embed_and_store(
             .iter()
             .map(|chunk| chunk.embedding_text.as_str())
             .collect();
-        let embeddings = embed_ollama(
+        let embeddings = embed_texts(
+            &options.provider,
             &options.base_url,
             &options.model,
             &input,
-            Duration::from_secs(options.timeout_secs),
+            options.timeout_secs,
         )?;
         if embeddings.len() != batch.len() {
             return Err(CassioError::Other(format!(
@@ -533,6 +527,16 @@ struct OllamaEmbedResponse {
     embeddings: Vec<Vec<f32>>,
 }
 
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbeddingsResponse {
+    data: Vec<OpenAiEmbeddingData>,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenAiEmbeddingData {
+    embedding: Vec<f32>,
+}
+
 pub(crate) fn embed_texts(
     provider: &str,
     base_url: &str,
@@ -540,12 +544,14 @@ pub(crate) fn embed_texts(
     input: &[&str],
     timeout_secs: u64,
 ) -> Result<Vec<Vec<f32>>, CassioError> {
-    if provider != "ollama" {
-        return Err(CassioError::Other(format!(
-            "Unsupported embedding provider: {provider} (supported: ollama)"
-        )));
+    let timeout = Duration::from_secs(timeout_secs);
+    match provider {
+        "ollama" => embed_ollama(base_url, model, input, timeout),
+        "openai" | "lmstudio" => embed_openai_compatible(base_url, model, input, timeout),
+        _ => Err(CassioError::Other(format!(
+            "Unsupported embedding provider: {provider} (supported: ollama, openai, lmstudio)"
+        ))),
     }
-    embed_ollama(base_url, model, input, Duration::from_secs(timeout_secs))
 }
 
 fn embed_ollama(
@@ -579,6 +585,53 @@ fn embed_ollama(
         ))
     })?;
     Ok(response.embeddings)
+}
+
+fn embed_openai_compatible(
+    base_url: &str,
+    model: &str,
+    input: &[&str],
+    timeout: Duration,
+) -> Result<Vec<Vec<f32>>, CassioError> {
+    let endpoint = format!("{}/embeddings", base_url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "model": model,
+        "input": input,
+    });
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(timeout))
+        .timeout_per_call(Some(timeout))
+        .build()
+        .into();
+    let raw_response = agent
+        .post(&endpoint)
+        .header("Content-Type", "application/json")
+        .send_json(&body)
+        .map_err(|e| {
+            CassioError::Other(format!("OpenAI-compatible embedding request failed: {e}"))
+        })?
+        .body_mut()
+        .read_to_string()
+        .map_err(|e| {
+            CassioError::Other(format!(
+                "OpenAI-compatible embedding response read failed: {e}"
+            ))
+        })?;
+    parse_openai_embeddings(&raw_response)
+}
+
+fn parse_openai_embeddings(raw_response: &str) -> Result<Vec<Vec<f32>>, CassioError> {
+    let response: OpenAiEmbeddingsResponse = serde_json::from_str(raw_response).map_err(|e| {
+        CassioError::Other(format!(
+            "OpenAI-compatible embedding response parse failed: {e}; body: {}",
+            truncate_for_error(raw_response)
+        ))
+    })?;
+    Ok(response
+        .data
+        .into_iter()
+        .map(|item| item.embedding)
+        .collect())
 }
 
 fn store_chunk(
@@ -875,6 +928,21 @@ mod tests {
             path,
             Path::new("/tmp/transcripts/.cassio/index/ollama-cassio-embedding-latest.sqlite")
         );
+    }
+
+    #[test]
+    fn parses_openai_compatible_embeddings() {
+        let raw = r#"{
+            "object": "list",
+            "data": [
+                {"object": "embedding", "index": 0, "embedding": [0.25, -0.5]},
+                {"object": "embedding", "index": 1, "embedding": [1.0, 2.0]}
+            ],
+            "model": "text-embedding-nomic-embed-text-v1.5"
+        }"#;
+
+        let embeddings = parse_openai_embeddings(raw).unwrap();
+        assert_eq!(embeddings, vec![vec![0.25, -0.5], vec![1.0, 2.0]]);
     }
 
     #[test]
