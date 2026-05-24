@@ -113,7 +113,7 @@ jobs:
             end
 
             test do
-              assert_match "cassio", shell_output("#{bin}/cassio --help")
+              assert_match version.to_s, shell_output("#{bin}/cassio --version")
             end
           end
           FORMULA
