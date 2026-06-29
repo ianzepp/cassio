@@ -390,11 +390,11 @@ fn normalize(raw: RawHermesSession) -> Result<ParsedSession, CassioError> {
                 .as_deref()
                 .or(raw_msg.reasoning.as_deref())
                 .filter(|s| !s.trim().is_empty())
-            {
-                blocks.push(ContentBlock::Thinking {
-                    text: reasoning.to_string(),
-                });
-            }
+        {
+            blocks.push(ContentBlock::Thinking {
+                text: reasoning.to_string(),
+            });
+        }
 
         if let Some(text) = raw_msg.content.as_ref().and_then(content_text)
             && !text.trim().is_empty()

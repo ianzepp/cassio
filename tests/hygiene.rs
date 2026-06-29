@@ -31,9 +31,7 @@ fn is_test_companion(path: &Path) -> bool {
     let Some(name) = path.file_name().and_then(|s| s.to_str()) else {
         return false;
     };
-    stem.ends_with("_test")
-        || stem.ends_with("_tests")
-        || name.ends_with(".test.rs")
+    stem.ends_with("_test") || stem.ends_with("_tests") || name.ends_with(".test.rs")
 }
 
 fn source_files() -> Vec<SourceFile> {
@@ -71,11 +69,7 @@ fn collect_rs_files(dir: &Path, out: &mut Vec<SourceFile>) {
             content = production.to_string();
         }
 
-        out.push(SourceFile {
-            path,
-            raw,
-            content,
-        });
+        out.push(SourceFile { path, raw, content });
     }
 }
 
@@ -153,9 +147,7 @@ fn no_inline_test_modules() {
     let files = source_files();
     let violations: Vec<String> = files
         .iter()
-        .filter(|file| {
-            file.raw.contains("#[cfg(test)]") && file.raw.contains("mod tests {")
-        })
+        .filter(|file| file.raw.contains("#[cfg(test)]") && file.raw.contains("mod tests {"))
         .map(|file| format!("{}: inline #[cfg(test)] mod tests {{", file.path.display()))
         .collect();
     assert!(
@@ -172,9 +164,7 @@ fn no_test_attr_in_production() {
     let files = source_files();
     let violations: Vec<String> = files
         .iter()
-        .filter(|file| {
-            file.raw.contains("#[test]") || file.raw.contains("#[tokio::test]")
-        })
+        .filter(|file| file.raw.contains("#[test]") || file.raw.contains("#[tokio::test]"))
         .map(|file| format!("{}: #[test] in production file", file.path.display()))
         .collect();
     assert!(
