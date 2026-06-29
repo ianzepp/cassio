@@ -1,3 +1,9 @@
+//! Optional git sync before writing transcripts and auto-commit/push afterward.
+//!
+//! All operations are best-effort: failures are logged to stderr and the caller's
+//! pipeline continues. Nothing here runs unless `[git].commit` (and optionally
+//! `[git].push`) is enabled in config.
+
 use std::path::Path;
 use std::process::Command;
 
