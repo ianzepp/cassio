@@ -1,3 +1,9 @@
+//! Redact secrets and sensitive paths from sessions and training exports.
+//!
+//! Pattern matching runs over text and JSON values before transcripts or training
+//! JSON are written to disk. Redaction kinds are recorded in training metadata so
+//! exports remain auditable without leaking credentials.
+
 use std::sync::OnceLock;
 
 use regex::{Captures, Regex};
@@ -28,21 +34,11 @@ pub fn redact_export(parsed: &ParsedSession) -> ParsedSession {
 
     training.metadata.project_path_sanitized =
         redact_text_with_audit(&training.metadata.project_path_raw, &mut audit);
-    training.metadata.git_branch = training
-        .metadata
-        .git_branch
-        .as_deref()
-        .map(|branch| redact_text_with_audit(branch, &mut audit));
-    training.metadata.title = training
-        .metadata
-        .title
-        .as_deref()
-        .map(|title| redact_text_with_audit(title, &mut audit));
-    training.metadata.version = training
-        .metadata
-        .version
-        .as_deref()
-        .map(|version| redact_text_with_audit(version, &mut audit));
+    training.metadata.git_branch =
+        redact_optional(&mut audit, training.metadata.git_branch.as_deref());
+    training.metadata.title = redact_optional(&mut audit, training.metadata.title.as_deref());
+    training.metadata.version =
+        redact_optional(&mut audit, training.metadata.version.as_deref());
     training.metadata.models_seen = training
         .metadata
         .models_seen
@@ -51,33 +47,15 @@ pub fn redact_export(parsed: &ParsedSession) -> ParsedSession {
         .collect();
     training.source.session_id = redact_text_with_audit(&training.source.session_id, &mut audit);
     training.source.source_path = redact_text_with_audit(&training.source.source_path, &mut audit);
-    training.source.source_root = training
-        .source
-        .source_root
-        .as_deref()
-        .map(|root| redact_text_with_audit(root, &mut audit));
+    training.source.source_root =
+        redact_optional(&mut audit, training.source.source_root.as_deref());
 
     for event in &mut training.events {
-        event.role = event
-            .role
-            .as_deref()
-            .map(|role| redact_text_with_audit(role, &mut audit));
-        event.model = event
-            .model
-            .as_deref()
-            .map(|model| redact_text_with_audit(model, &mut audit));
-        event.sanitized_text = event
-            .raw_text
-            .as_deref()
-            .map(|text| redact_text_with_audit(text, &mut audit));
-        event.tool_name = event
-            .tool_name
-            .as_deref()
-            .map(|name| redact_text_with_audit(name, &mut audit));
-        event.tool_call_id = event
-            .tool_call_id
-            .as_deref()
-            .map(|id| redact_text_with_audit(id, &mut audit));
+        event.role = redact_optional(&mut audit, event.role.as_deref());
+        event.model = redact_optional(&mut audit, event.model.as_deref());
+        event.sanitized_text = redact_optional(&mut audit, event.raw_text.as_deref());
+        event.tool_name = redact_optional(&mut audit, event.tool_name.as_deref());
+        event.tool_call_id = redact_optional(&mut audit, event.tool_call_id.as_deref());
         event.tool_input_sanitized = event
             .tool_input_raw
             .as_ref()
@@ -128,6 +106,10 @@ fn redact_session_with_audit(session: &Session, audit: &mut RedactionAudit) -> S
 pub fn redact_text(input: &str) -> String {
     let mut audit = RedactionAudit::default();
     redact_text_with_audit(input, &mut audit)
+}
+
+fn redact_optional(audit: &mut RedactionAudit, value: Option<&str>) -> Option<String> {
+    value.map(|text| redact_text_with_audit(text, audit))
 }
 
 fn redact_text_with_audit(input: &str, audit: &mut RedactionAudit) -> String {
@@ -206,22 +188,10 @@ fn redact_metadata(meta: &SessionMetadata, audit: &mut RedactionAudit) -> Sessio
         project_path: redact_text_with_audit(&meta.project_path, audit),
         started_at: meta.started_at,
         session_kind: meta.session_kind,
-        version: meta
-            .version
-            .as_deref()
-            .map(|value| redact_text_with_audit(value, audit)),
-        git_branch: meta
-            .git_branch
-            .as_deref()
-            .map(|value| redact_text_with_audit(value, audit)),
-        model: meta
-            .model
-            .as_deref()
-            .map(|value| redact_text_with_audit(value, audit)),
-        title: meta
-            .title
-            .as_deref()
-            .map(|value| redact_text_with_audit(value, audit)),
+        version: redact_optional(audit, meta.version.as_deref()),
+        git_branch: redact_optional(audit, meta.git_branch.as_deref()),
+        model: redact_optional(audit, meta.model.as_deref()),
+        title: redact_optional(audit, meta.title.as_deref()),
     }
 }
 
@@ -229,10 +199,7 @@ fn redact_message(message: &Message, audit: &mut RedactionAudit) -> Message {
     Message {
         role: message.role,
         timestamp: message.timestamp,
-        model: message
-            .model
-            .as_deref()
-            .map(|value| redact_text_with_audit(value, audit)),
+        model: redact_optional(audit, message.model.as_deref()),
         content: message
             .content
             .iter()
