@@ -391,7 +391,7 @@ fn split_key(key: &str) -> Result<(Vec<String>, String), CassioError> {
     if parts.is_empty() || parts.iter().any(|p| p.is_empty()) {
         return Err(CassioError::Other(format!("Invalid key: {key}")));
     }
-    let field = parts.last().unwrap().to_string();
+    let field = parts[parts.len() - 1].to_string();
     let table_path = parts[..parts.len() - 1]
         .iter()
         .map(|s| s.to_string())
