@@ -378,7 +378,7 @@ pub fn run_monthly(
             model,
             provider,
             base_url,
-            &options,
+            options,
             InvocationContext {
                 checkpoint_dir: &month_dir,
                 day: month,
@@ -419,7 +419,7 @@ pub fn run_monthly(
                 model,
                 provider,
                 base_url,
-                &options,
+                options,
                 InvocationContext {
                     checkpoint_dir: &month_dir,
                     day: month,
@@ -452,7 +452,7 @@ pub fn run_monthly(
             model,
             provider,
             base_url,
-            &options,
+            options,
             InvocationContext {
                 checkpoint_dir: &month_dir,
                 day: month,
@@ -606,6 +606,7 @@ fn find_pending_days(
 /// Returns `Ok(true)` when the LLM produced output, `Ok(false)` when it returned
 /// empty output (indicating a soft failure), and `Err` for hard failures (I/O, LLM
 /// process error).
+#[allow(clippy::too_many_arguments)]
 fn compact_day(
     output_dir: &Path,
     day: &str,

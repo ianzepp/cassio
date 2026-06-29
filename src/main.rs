@@ -697,6 +697,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn index_options_from_config(
     embedding: Option<&cassio::config::EmbeddingConfig>,
     month: Option<String>,

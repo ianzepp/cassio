@@ -331,6 +331,7 @@ fn push_chunk(
     embedding_lines.clear();
 }
 
+#[allow(clippy::too_many_arguments)]
 fn push_index_chunk(
     chunks: &mut Vec<IndexChunk>,
     source_path: &str,
@@ -882,7 +883,7 @@ fn hash_text(text: &str) -> String {
 }
 
 fn encode_embedding(embedding: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(embedding.len() * std::mem::size_of::<f32>());
+    let mut out = Vec::with_capacity(std::mem::size_of_val(embedding));
     for value in embedding {
         out.extend_from_slice(&value.to_le_bytes());
     }

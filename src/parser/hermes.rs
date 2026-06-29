@@ -384,8 +384,8 @@ fn normalize(raw: RawHermesSession) -> Result<ParsedSession, CassioError> {
         };
 
         let mut blocks = Vec::new();
-        if role == Role::Assistant {
-            if let Some(reasoning) = raw_msg
+        if role == Role::Assistant
+            && let Some(reasoning) = raw_msg
                 .reasoning_content
                 .as_deref()
                 .or(raw_msg.reasoning.as_deref())
@@ -395,7 +395,6 @@ fn normalize(raw: RawHermesSession) -> Result<ParsedSession, CassioError> {
                     text: reasoning.to_string(),
                 });
             }
-        }
 
         if let Some(text) = raw_msg.content.as_ref().and_then(content_text)
             && !text.trim().is_empty()
