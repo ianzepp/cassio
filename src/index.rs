@@ -1,3 +1,10 @@
+//! Semantic indexing: chunk transcripts and store embeddings in SQLite.
+//!
+//! `cassio index` scans monthly, daily, session, and optional training artifacts,
+//! splits them into overlapping text chunks, embeds new or changed chunks through
+//! the configured provider, and writes vectors to `.cassio/index.sqlite` for
+//! `cassio search --semantic`.
+
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::num::NonZeroU32;
