@@ -1,3 +1,9 @@
+//! JSONL formatter: metadata, messages, and stats as one JSON object per line.
+//!
+//! The first line is `SessionMetadata`, each message is its own line, and the
+//! final line is `SessionStats`. This layout keeps streaming parsers simple while
+//! preserving the full normalized AST.
+
 use std::io::Write;
 
 use crate::error::CassioError;
