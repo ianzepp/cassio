@@ -231,6 +231,30 @@ pub struct SessionStats {
     pub cost: Option<f64>,
 }
 
+const DELEGATED_PROMPT_PREFIXES: &[&str] = &[
+    "you are ",
+    "your job is ",
+    "you are a ",
+    "you are an ",
+];
+
+const DELEGATED_CONTENT_MARKERS: &[&str] = &[
+    "do not modify",
+    "do not change files",
+    "do not execute",
+    "focus on ",
+    "output format",
+    "provide a report",
+    "report only",
+    "analyze as data",
+    "do not modify code",
+    "just analyze",
+    "just review",
+    "do not write code",
+    "proceed to implementation",
+    "limit test updates",
+];
+
 pub fn classify_session_kind(messages: &[Message]) -> SessionKind {
     let Some(first_user_text) = first_user_text(messages) else {
         return SessionKind::Uncertain;
@@ -239,31 +263,14 @@ pub fn classify_session_kind(messages: &[Message]) -> SessionKind {
     let text = first_user_text.trim();
     let lower = text.to_lowercase();
 
-    if lower.starts_with("you are ")
-        || lower.starts_with("your job is ")
-        || lower.starts_with("you are a ")
-        || lower.starts_with("you are an ")
+    if DELEGATED_PROMPT_PREFIXES
+        .iter()
+        .any(|prefix| lower.starts_with(prefix))
     {
         return SessionKind::Delegated;
     }
 
-    let delegated_markers = [
-        "do not modify",
-        "do not change files",
-        "do not execute",
-        "focus on ",
-        "output format",
-        "provide a report",
-        "report only",
-        "analyze as data",
-        "do not modify code",
-        "just analyze",
-        "just review",
-        "do not write code",
-        "proceed to implementation",
-        "limit test updates",
-    ];
-    let marker_hits = delegated_markers
+    let marker_hits = DELEGATED_CONTENT_MARKERS
         .iter()
         .filter(|marker| lower.contains(**marker))
         .count();
