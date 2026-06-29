@@ -9,11 +9,12 @@ const MAX_PANIC: usize = 0;
 const MAX_UNREACHABLE: usize = 0;
 const MAX_TODO: usize = 0;
 const MAX_UNIMPLEMENTED: usize = 0;
-// Initialized to the current production count: these ratchet only downward.
-// Inline `#[cfg(test)] mod tests { ... }` bodies in production are debt to
-// extract to `*_test.rs` companion files in future housekeeping passes.
-const MAX_INLINE_TEST_MODULES: usize = 17;
-const MAX_TEST_ATTR_IN_PRODUCTION: usize = 17;
+// Inline `#[cfg(test)] mod tests { ... }` bodies in production are forbidden;
+// tests live in dedicated `*_test.rs` companion files referenced via
+// `#[cfg(test)] #[path = "..."] mod tests;`. These stay at zero so any new
+// inline test module fails the build.
+const MAX_INLINE_TEST_MODULES: usize = 0;
+const MAX_TEST_ATTR_IN_PRODUCTION: usize = 0;
 
 struct SourceFile {
     path: PathBuf,
