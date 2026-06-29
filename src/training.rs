@@ -1,3 +1,10 @@
+//! Training-export schema built alongside the session AST.
+//!
+//! Parsers populate `ParsedSession` with both the normalized `Session` and a
+//! parallel `TrainingSession` event stream. Formatters can emit emoji-text,
+//! JSONL, or the training JSON artifact; redaction and indexing consume the same
+//! training metadata without re-parsing raw tool logs.
+
 use std::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
