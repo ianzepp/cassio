@@ -358,9 +358,11 @@ pub fn run_monthly(
     // Read all compaction contents
     let mut contents: Vec<(String, String)> = Vec::new(); // (filename, content)
     for path in &daily_files {
-        let name = path.file_name().unwrap().to_string_lossy().to_string();
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
         let content = std::fs::read_to_string(path)?;
-        contents.push((name, content));
+        contents.push((name.to_string(), content));
     }
 
     // Calculate total size to decide chunking strategy
