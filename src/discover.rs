@@ -41,6 +41,15 @@ use walkdir::WalkDir;
 use crate::ast::Tool;
 use crate::config::SourcesConfig;
 
+const ALL_TOOLS: [Tool; 6] = [
+    Tool::Claude,
+    Tool::ClaudeDesktop,
+    Tool::Codex,
+    Tool::Hermes,
+    Tool::OpenCode,
+    Tool::Pi,
+];
+
 /// Return the default log directory for a tool, or `None` if it does not exist.
 ///
 /// WHY: Returning `None` rather than an error when a directory is absent lets
@@ -63,18 +72,10 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
 
 /// Return all tool source directories that exist on this machine.
 ///
-/// Checks the four known tools in a fixed order. Tools whose default directory
-/// does not exist are silently skipped.
+/// Checks all known tools in a fixed order. Tools whose default directory does not
+/// exist are silently skipped.
 pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
-    let tools = [
-        Tool::Claude,
-        Tool::ClaudeDesktop,
-        Tool::Codex,
-        Tool::Hermes,
-        Tool::OpenCode,
-        Tool::Pi,
-    ];
-    tools
+    ALL_TOOLS
         .iter()
         .filter_map(|&tool| default_source_path(tool).map(|p| (tool, p)))
         .collect()
@@ -90,15 +91,7 @@ pub fn discover_all_sources() -> Vec<(Tool, PathBuf)> {
 /// The config path wins only when it exists — a misconfigured path degrades to the
 /// default rather than failing the whole discovery step.
 pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<(Tool, PathBuf)> {
-    let tools = [
-        Tool::Claude,
-        Tool::ClaudeDesktop,
-        Tool::Codex,
-        Tool::Hermes,
-        Tool::OpenCode,
-        Tool::Pi,
-    ];
-    tools
+    ALL_TOOLS
         .iter()
         .filter_map(|&tool| {
             // Try config path first, then default
@@ -129,8 +122,8 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
     let mut results = Vec::new();
 
     match tool {
-        Some(Tool::Claude) | Some(Tool::ClaudeDesktop) => {
-            find_claude_files(dir, &mut results, tool.unwrap());
+        Some(tool @ Tool::Claude) | Some(tool @ Tool::ClaudeDesktop) => {
+            find_claude_files(dir, &mut results, tool);
         }
         Some(Tool::Codex) => {
             find_codex_files(dir, &mut results);
