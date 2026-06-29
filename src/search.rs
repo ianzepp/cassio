@@ -1,3 +1,9 @@
+//! Keyword, regex, and semantic search over cassio transcript artifacts.
+//!
+//! Text search walks monthly summaries, daily compactions, session transcripts,
+//! and optional training JSON. Semantic search reuses the SQLite index built by
+//! `cassio index` and ranks chunks by cosine similarity to the query embedding.
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -507,19 +513,21 @@ fn looks_like_path_token(token: &str) -> bool {
         || trimmed.starts_with("../")
 }
 
+const EMBEDDED_PATH_MARKERS: &[&str] = &[
+    "/Users/",
+    "/Volumes/",
+    "/var/",
+    "/tmp/",
+    "/opt/",
+    "/usr/",
+    "~/",
+    "./",
+    "../",
+];
+
 fn strip_embedded_paths(token: &str) -> String {
     let mut out = token.to_string();
-    for marker in [
-        "/Users/",
-        "/Volumes/",
-        "/var/",
-        "/tmp/",
-        "/opt/",
-        "/usr/",
-        "~/",
-        "./",
-        "../",
-    ] {
+    for marker in EMBEDDED_PATH_MARKERS {
         while let Some(start) = out.find(marker) {
             let end = out[start..]
                 .find(path_terminal_char)
