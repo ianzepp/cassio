@@ -1,3 +1,9 @@
+//! Aggregate transcript statistics into markdown summary tables.
+//!
+//! Scans formatted session files under an output directory and prints regular
+//! (month × tool), daily, or per-project tables with token usage, cost estimates,
+//! duration, and interactive/agentic/abandoned session classification.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
@@ -5,6 +11,8 @@ use walkdir::WalkDir;
 
 use crate::error::CassioError;
 use crate::pricing;
+
+const KNOWN_TOOL_SUFFIXES: &[&str] = &["claude", "codex", "hermes", "opencode", "pi"];
 
 /// Stats parsed from a single session transcript file.
 #[derive(Default)]
@@ -183,11 +191,10 @@ fn parse_session_filename(name: &str) -> Option<(String, String)> {
     }
 
     let tool_name = stem.rsplit('-').next()?;
-    match tool_name {
-        "claude" | "codex" | "hermes" | "opencode" | "pi" => {
-            Some((date.to_string(), tool_name.to_string()))
-        }
-        _ => None,
+    if KNOWN_TOOL_SUFFIXES.contains(&tool_name) {
+        Some((date.to_string(), tool_name.to_string()))
+    } else {
+        None
     }
 }
 
