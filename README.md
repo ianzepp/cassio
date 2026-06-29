@@ -417,23 +417,29 @@ cassio [OPTIONS] [PATH] [COMMAND]
 
 Commands:
   init     Create a default config file
+  get      Get a config value (e.g. cassio get output)
+  set      Set a config value (e.g. cassio set git.autocommit true)
+  unset    Remove a config value (e.g. cassio unset git.autocommit)
+  docs     Show full documentation
   summary  Show summary statistics for transcripts
   search   Search transcript outputs with summary-first ranking
   index    Build a semantic embedding index for transcript outputs
   compact  Compact transcripts into daily/monthly analysis
-  get      Get a config value (e.g. cassio get output)
-  set      Set a config value (e.g. cassio set git.commit true)
-  unset    Remove a config value (e.g. cassio unset git.push)
+  help     Print this message or the help of the given subcommand(s)
 
 Arguments:
   [PATH]  Input file or directory (omit for stdin)
 
 Options:
-  -o, --output <DIR>     Output directory for batch mode
-  -f, --format <FORMAT>  Output format: emoji-text, jsonl, training-json [default: emoji-text]
-      --all              Discover and process all tools' default paths
-      --force            Regenerate even if output is newer than input
-  -h, --help             Print help
+  -o, --output <DIR>          Output directory for batch mode
+  -f, --format <FORMAT>        Output format: emoji-text, jsonl, training-json [default: emoji-text]
+      --all                    Discover and process all tools' default paths
+      --force                  Regenerate even if output is newer than input
+      --detached               Ignore config file; all options must be explicit
+      --filter-dir <FILTER_DIR>  Only process sessions whose working directory is under this path
+      --dry-run                Show what would be processed without writing any files
+  -h, --help                   Print help
+  -V, --version                Print version
 ```
 
 ### cassio summary
