@@ -87,26 +87,10 @@ pub fn detect_parser(path: &Path) -> Result<Box<dyn Parser>, CassioError> {
         return Ok(Box::new(pi::PiParser));
     }
 
-    // For .jsonl files, peek at first line to detect format
+    // For .jsonl files, peek at first line to detect format (default: Claude).
     if path.extension().is_some_and(|e| e == "jsonl") {
         let first_line = read_first_line(path)?;
-        if first_line.contains("\"sessionId\"") {
-            return Ok(Box::new(claude::ClaudeParser));
-        }
-        if first_line.contains("\"session_meta\"") || first_line.contains("\"response_item\"") {
-            return Ok(Box::new(codex::CodexParser));
-        }
-        if first_line.contains("\"platform\"") && first_line.contains("\"model\"") {
-            return Ok(Box::new(hermes::HermesParser));
-        }
-        if first_line.contains("\"type\":\"session\"") && first_line.contains("\"cwd\"") {
-            return Ok(Box::new(pi::PiParser));
-        }
-    }
-
-    // Default to Claude parser for .jsonl files
-    if path.extension().is_some_and(|e| e == "jsonl") {
-        return Ok(Box::new(claude::ClaudeParser));
+        return Ok(parser_for_jsonl_content(&first_line));
     }
 
     Err(CassioError::UnknownFormat(path.to_path_buf()))
@@ -118,6 +102,10 @@ pub fn detect_parser(path: &Path) -> Result<Box<dyn Parser>, CassioError> {
 /// on content. The same field-name heuristics used in `detect_parser` apply here.
 /// Defaults to Claude when no match is found.
 pub fn detect_parser_from_content(first_line: &str) -> Box<dyn Parser> {
+    parser_for_jsonl_content(first_line)
+}
+
+fn parser_for_jsonl_content(first_line: &str) -> Box<dyn Parser> {
     if first_line.contains("\"sessionId\"") {
         Box::new(claude::ClaudeParser)
     } else if first_line.contains("\"session_meta\"") || first_line.contains("\"response_item\"") {
@@ -127,7 +115,6 @@ pub fn detect_parser_from_content(first_line: &str) -> Box<dyn Parser> {
     } else if first_line.contains("\"type\":\"session\"") && first_line.contains("\"cwd\"") {
         Box::new(pi::PiParser)
     } else {
-        // Default to Claude
         Box::new(claude::ClaudeParser)
     }
 }
