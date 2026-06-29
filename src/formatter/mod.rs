@@ -1,3 +1,9 @@
+//! Output formatters that render `ParsedSession` values for humans or downstream tools.
+//!
+//! `OutputFormat` selects among emoji-text (default), JSONL, and training JSON.
+//! Each formatter implements the shared `Formatter` trait and writes to any `Write`
+//! target so the CLI can stream to stdout or files without duplicating dispatch.
+
 pub mod emoji_text;
 pub mod jsonl;
 pub mod training_json;
