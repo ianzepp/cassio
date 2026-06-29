@@ -299,13 +299,13 @@ pub fn init() -> Result<(), CassioError> {
 # Update the semantic index after transcript generation completes
 # auto_index = false
 
-# Provider for `cassio index`; currently only "ollama" is supported
-# provider = "ollama"
+# Provider for `cassio index`: "builtin", "ollama", "openai", or "lmstudio"
+# provider = "builtin"
 
-# Embedding model name
+# Embedding model name (ignored for "builtin"; passed to other providers)
 # model = "cassio-embedding"
 
-# Ollama base URL
+# Provider base URL (unused for "builtin")
 # base_url = "http://127.0.0.1:11434"
 
 # Optional automatic-indexing behavior
