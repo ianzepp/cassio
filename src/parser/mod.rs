@@ -29,6 +29,8 @@
 
 pub mod claude;
 pub mod codex;
+pub mod cursor;
+pub mod grok;
 pub mod hermes;
 pub mod opencode;
 pub mod pi;
@@ -87,6 +89,14 @@ pub fn detect_parser(path: &Path) -> Result<Box<dyn Parser>, CassioError> {
         return Ok(Box::new(pi::PiParser));
     }
 
+    if path_str.contains(".grok/sessions") && path_str.contains("chat_history.jsonl") {
+        return Ok(Box::new(grok::GrokParser));
+    }
+
+    if path_str.contains("/agent-transcripts/") {
+        return Ok(Box::new(cursor::CursorParser));
+    }
+
     // For .jsonl files, peek at first line to detect format (default: Claude).
     if path.extension().is_some_and(|e| e == "jsonl") {
         let first_line = read_first_line(path)?;
@@ -114,6 +124,16 @@ fn parser_for_jsonl_content(first_line: &str) -> Box<dyn Parser> {
         Box::new(hermes::HermesParser)
     } else if first_line.contains("\"type\":\"session\"") && first_line.contains("\"cwd\"") {
         Box::new(pi::PiParser)
+    } else if first_line.contains("\"role\":")
+        && first_line.contains("\"message\":")
+        && !first_line.contains("\"sessionId\"")
+    {
+        Box::new(cursor::CursorParser)
+    } else if first_line.contains("\"type\":\"system\"")
+        || first_line.contains("\"type\":\"tool_result\"")
+        || (first_line.contains("\"type\":\"assistant\"") && first_line.contains("\"tool_calls\""))
+    {
+        Box::new(grok::GrokParser)
     } else {
         Box::new(claude::ClaudeParser)
     }

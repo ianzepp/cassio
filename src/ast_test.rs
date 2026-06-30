@@ -7,6 +7,8 @@ fn test_tool_display() {
     assert_eq!(Tool::Hermes.to_string(), "hermes");
     assert_eq!(Tool::OpenCode.to_string(), "opencode");
     assert_eq!(Tool::Pi.to_string(), "pi");
+    assert_eq!(Tool::Grok.to_string(), "grok");
+    assert_eq!(Tool::Cursor.to_string(), "cursor");
 }
 
 #[test]

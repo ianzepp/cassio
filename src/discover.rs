@@ -19,6 +19,8 @@
 //! - **Hermes**: `state.db` sessions plus legacy `~/.hermes/sessions/*.{json,jsonl}`
 //! - **OpenCode**: session IDs are directories named `ses_*` under `message/`
 //! - **pi**: any `*.jsonl` file under `~/.pi/agent/sessions/`
+//! - **Grok**: `chat_history.jsonl` under `~/.grok/sessions/<project>/<session-id>/`
+//! - **Cursor**: `*.jsonl` under `~/.cursor/projects/**/agent-transcripts/`
 //!
 //! # TRADE-OFFS
 //!
@@ -35,19 +37,22 @@
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use chrono::{Datelike, Timelike};
 use rusqlite::{Connection, OpenFlags};
 use walkdir::WalkDir;
 
 use crate::ast::Tool;
 use crate::config::SourcesConfig;
 
-const ALL_TOOLS: [Tool; 6] = [
+const ALL_TOOLS: [Tool; 8] = [
     Tool::Claude,
     Tool::ClaudeDesktop,
     Tool::Codex,
     Tool::Hermes,
     Tool::OpenCode,
     Tool::Pi,
+    Tool::Grok,
+    Tool::Cursor,
 ];
 
 /// Return the default log directory for a tool, or `None` if it does not exist.
@@ -66,6 +71,8 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
         Tool::Hermes => home.join(".hermes"),
         Tool::OpenCode => home.join(".local/share/opencode/storage"),
         Tool::Pi => home.join(".pi/agent/sessions"),
+        Tool::Grok => home.join(".grok/sessions"),
+        Tool::Cursor => home.join(".cursor/projects"),
     };
     if path.exists() { Some(path) } else { None }
 }
@@ -102,6 +109,8 @@ pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<
                 Tool::Hermes => s.hermes_path(),
                 Tool::OpenCode => s.opencode_path(),
                 Tool::Pi => s.pi_path(),
+                Tool::Grok => s.grok_path(),
+                Tool::Cursor => s.cursor_path(),
             });
             let path = config_path
                 .filter(|p| p.exists())
@@ -137,6 +146,12 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
         Some(Tool::Pi) => {
             find_pi_files(dir, &mut results);
         }
+        Some(Tool::Grok) => {
+            find_grok_files(dir, &mut results);
+        }
+        Some(Tool::Cursor) => {
+            find_cursor_files(dir, &mut results);
+        }
         None => {
             // Auto-detect based on directory content
             let dir_str = dir.to_string_lossy();
@@ -150,6 +165,10 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
                 || dir_str.contains("/pi/agent/sessions")
             {
                 find_pi_files(dir, &mut results);
+            } else if dir_str.contains(".grok/sessions") || dir_str.contains("/.grok/sessions") {
+                find_grok_files(dir, &mut results);
+            } else if dir_str.contains("agent-transcripts") {
+                find_cursor_files(dir, &mut results);
             } else if dir_str.contains("local-agent-mode-sessions") {
                 find_claude_files(dir, &mut results, Tool::ClaudeDesktop);
             } else {
@@ -311,6 +330,30 @@ fn find_pi_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
     }
 }
 
+fn find_grok_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
+    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if path
+            .file_name()
+            .is_some_and(|name| name == "chat_history.jsonl")
+        {
+            results.push((Tool::Grok, path.to_path_buf()));
+        }
+    }
+}
+
+fn find_cursor_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
+    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let path_str = path.to_string_lossy();
+        if path.extension().is_some_and(|e| e == "jsonl")
+            && path_str.contains("/agent-transcripts/")
+        {
+            results.push((Tool::Cursor, path.to_path_buf()));
+        }
+    }
+}
+
 /// Derive the output path `(year-month folder, filename)` for a session file.
 ///
 /// Used in batch mode to organize transcripts into `YYYY-MM/` subdirectories.
@@ -322,6 +365,8 @@ pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
         Tool::Codex => derive_codex_output_path(path),
         Tool::Hermes => derive_hermes_output_path(path),
         Tool::Pi => derive_pi_output_path(path),
+        Tool::Grok => derive_grok_output_path(path),
+        Tool::Cursor => derive_cursor_output_path(path),
         Tool::OpenCode => {
             // For OpenCode we need the session data; use a placeholder
             ("unknown".to_string(), format!("unknown-{tool}.md"))
@@ -432,6 +477,46 @@ fn sanitize_stem_suffix(s: &str) -> String {
     s.chars()
         .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
         .collect()
+}
+
+fn derive_grok_output_path(path: &Path) -> (String, String) {
+    if let Some(ts) = crate::parser::grok::grok_started_at_from_source(path) {
+        let folder = format!("{:04}-{:02}", ts.year(), ts.month());
+        let stem = format!(
+            "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}-grok.md",
+            ts.year(),
+            ts.month(),
+            ts.day(),
+            ts.hour(),
+            ts.minute(),
+            ts.second()
+        );
+        return (folder, stem);
+    }
+    if let Some(id) = crate::parser::grok::grok_session_id_from_source(path) {
+        return ("unknown".to_string(), format!("{id}-grok.md"));
+    }
+    ("unknown".to_string(), "unknown-grok.md".to_string())
+}
+
+fn derive_cursor_output_path(path: &Path) -> (String, String) {
+    if let Some(ts) = crate::parser::cursor::cursor_started_at_from_source(path) {
+        let folder = format!("{:04}-{:02}", ts.year(), ts.month());
+        let stem = format!(
+            "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}-cursor.md",
+            ts.year(),
+            ts.month(),
+            ts.day(),
+            ts.hour(),
+            ts.minute(),
+            ts.second()
+        );
+        return (folder, stem);
+    }
+    if let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) {
+        return ("unknown".to_string(), format!("{id}-cursor.md"));
+    }
+    ("unknown".to_string(), "unknown-cursor.md".to_string())
 }
 
 fn derive_pi_output_path(path: &Path) -> (String, String) {

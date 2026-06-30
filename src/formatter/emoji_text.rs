@@ -100,6 +100,12 @@ fn format_metadata(meta: &SessionMetadata, w: &mut dyn Write) -> Result<(), Cass
             }
         }
         Tool::Pi => {}
+        Tool::Grok => {
+            if let Some(ref title) = meta.title {
+                writeln!(w, "{EMOJI_META} Title: {title}")?;
+            }
+        }
+        Tool::Cursor => {}
     }
 
     if let Some(ref branch) = meta.git_branch {

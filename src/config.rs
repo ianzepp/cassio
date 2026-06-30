@@ -62,6 +62,8 @@ pub struct SourcesConfig {
     pub hermes: Option<String>,
     pub opencode: Option<String>,
     pub pi: Option<String>,
+    pub grok: Option<String>,
+    pub cursor: Option<String>,
 }
 
 /// Embedding provider options used by `cassio index`.
@@ -329,6 +331,8 @@ pub fn init() -> Result<(), CassioError> {
 # hermes = "~/.hermes"
 # opencode = "~/.local/share/opencode/storage"
 # pi = "~/.pi/agent/sessions"
+# grok = "~/.grok/sessions"
+# cursor = "~/.cursor/projects"
 "#;
 
     if let Some(parent) = path.parent() {
@@ -535,6 +539,16 @@ impl SourcesConfig {
     /// Resolve the configured pi source path, expanding `~`.
     pub fn pi_path(&self) -> Option<PathBuf> {
         self.pi.as_deref().map(expand_tilde)
+    }
+
+    /// Resolve the configured Grok source path, expanding `~`.
+    pub fn grok_path(&self) -> Option<PathBuf> {
+        self.grok.as_deref().map(expand_tilde)
+    }
+
+    /// Resolve the configured Cursor source path, expanding `~`.
+    pub fn cursor_path(&self) -> Option<PathBuf> {
+        self.cursor.as_deref().map(expand_tilde)
     }
 }
 

@@ -1051,6 +1051,8 @@ fn process_file_list(
             Tool::Hermes => Box::new(cassio::parser::hermes::HermesParser),
             Tool::OpenCode => Box::new(cassio::parser::opencode::OpenCodeParser),
             Tool::Pi => Box::new(cassio::parser::pi::PiParser),
+            Tool::Grok => Box::new(cassio::parser::grok::GrokParser),
+            Tool::Cursor => Box::new(cassio::parser::cursor::CursorParser),
         };
 
         match parser.parse_export(path) {

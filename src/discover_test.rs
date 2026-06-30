@@ -114,3 +114,39 @@ fn test_derive_claude_output_path_uses_first_non_empty_line() {
 
     fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn test_find_grok_files_collects_chat_history_only() {
+    let dir = temp_dir("discover-grok");
+    let session_dir = dir.join("project").join("019f15e0-2078-7bb1-98d0-5554a486aafc");
+    fs::create_dir_all(&session_dir).unwrap();
+    fs::write(session_dir.join("chat_history.jsonl"), "{}\n").unwrap();
+    fs::write(dir.join("project").join("prompt_history.jsonl"), "{}\n").unwrap();
+
+    let mut results = Vec::new();
+    find_grok_files(&dir, &mut results);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, Tool::Grok);
+    assert!(results[0].1.ends_with("chat_history.jsonl"));
+
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn test_find_cursor_files_collects_agent_transcripts() {
+    let dir = temp_dir("discover-cursor");
+    let transcript_dir = dir
+        .join("Users-me-app")
+        .join("agent-transcripts")
+        .join("abc");
+    fs::create_dir_all(&transcript_dir).unwrap();
+    fs::write(transcript_dir.join("abc.jsonl"), "{}\n").unwrap();
+    fs::write(dir.join("Users-me-app").join("worker.log"), "x").unwrap();
+
+    let mut results = Vec::new();
+    find_cursor_files(&dir, &mut results);
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].0, Tool::Cursor);
+
+    fs::remove_dir_all(dir).ok();
+}

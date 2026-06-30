@@ -52,6 +52,8 @@ pub enum Tool {
     Hermes,
     OpenCode,
     Pi,
+    Grok,
+    Cursor,
 }
 
 impl std::fmt::Display for Tool {
@@ -64,6 +66,8 @@ impl std::fmt::Display for Tool {
             Tool::Hermes => write!(f, "hermes"),
             Tool::OpenCode => write!(f, "opencode"),
             Tool::Pi => write!(f, "pi"),
+            Tool::Grok => write!(f, "grok"),
+            Tool::Cursor => write!(f, "cursor"),
         }
     }
 }
