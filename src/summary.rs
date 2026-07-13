@@ -12,8 +12,9 @@ use walkdir::WalkDir;
 use crate::error::CassioError;
 use crate::pricing;
 
-const KNOWN_TOOL_SUFFIXES: &[&str] =
-    &["claude", "codex", "hermes", "opencode", "pi", "grok", "cursor"];
+const KNOWN_TOOL_SUFFIXES: &[&str] = &[
+    "claude", "codex", "hermes", "opencode", "pi", "grok", "cursor",
+];
 
 /// Stats parsed from a single session transcript file.
 #[derive(Default)]

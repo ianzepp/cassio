@@ -186,7 +186,10 @@ fn parse_lines<I: Iterator<Item = String>>(
                 }
 
                 if !blocks.is_empty() {
-                    if blocks.iter().any(|block| matches!(block, ContentBlock::Text { .. })) {
+                    if blocks
+                        .iter()
+                        .any(|block| matches!(block, ContentBlock::Text { .. }))
+                    {
                         stats.assistant_messages += 1;
                     }
                     messages.push(Message {
@@ -207,10 +210,7 @@ fn parse_lines<I: Iterator<Item = String>>(
                 let (name, input) = pending_tools
                     .remove(&tool_call_id)
                     .unwrap_or(("unknown".to_string(), Value::Object(Default::default())));
-                let content = record
-                    .get("content")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("");
+                let content = record.get("content").and_then(|v| v.as_str()).unwrap_or("");
                 let success = !grok_tool_result_failed(content);
                 if !success {
                     stats.tool_errors += 1;
@@ -252,7 +252,8 @@ fn parse_lines<I: Iterator<Item = String>>(
         }
     }
 
-    let mut meta = metadata.ok_or_else(|| CassioError::Other("No Grok session metadata found".into()))?;
+    let mut meta =
+        metadata.ok_or_else(|| CassioError::Other("No Grok session metadata found".into()))?;
     meta.session_kind = classify_session_kind(&messages);
     stats.duration_seconds = match (first_timestamp, last_timestamp) {
         (Some(first), Some(last)) if last >= first => Some((last - first).num_seconds()),
@@ -320,7 +321,10 @@ pub(crate) fn grok_session_id_from_source(path: &Path) -> Option<String> {
         return Some(summary.info.id);
     }
     let parent = path.parent()?;
-    parent.file_name().and_then(|name| name.to_str()).map(str::to_string)
+    parent
+        .file_name()
+        .and_then(|name| name.to_str())
+        .map(str::to_string)
 }
 
 pub(crate) fn grok_started_at_from_source(path: &Path) -> Option<DateTime<Utc>> {
@@ -332,7 +336,10 @@ pub(crate) fn grok_started_at_from_source(path: &Path) -> Option<DateTime<Utc>> 
         .and_then(uuid_v7_timestamp)
 }
 
-fn load_metadata_from_source(source_path: &str, source_root: Option<&str>) -> Option<SessionMetadata> {
+fn load_metadata_from_source(
+    source_path: &str,
+    source_root: Option<&str>,
+) -> Option<SessionMetadata> {
     if source_path == "stdin" {
         return Some(SessionMetadata {
             session_id: "stdin".to_string(),
@@ -374,9 +381,7 @@ fn load_metadata_from_source(source_path: &str, source_root: Option<&str>) -> Op
         version: None,
         git_branch: summary.as_ref().and_then(|s| s.head_branch.clone()),
         model: summary.as_ref().and_then(|s| s.current_model_id.clone()),
-        title: summary
-            .as_ref()
-            .and_then(|s| s.generated_title.clone()),
+        title: summary.as_ref().and_then(|s| s.generated_title.clone()),
     })
 }
 

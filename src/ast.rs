@@ -235,12 +235,8 @@ pub struct SessionStats {
     pub cost: Option<f64>,
 }
 
-const DELEGATED_PROMPT_PREFIXES: &[&str] = &[
-    "you are ",
-    "your job is ",
-    "you are a ",
-    "you are an ",
-];
+const DELEGATED_PROMPT_PREFIXES: &[&str] =
+    &["you are ", "your job is ", "you are a ", "you are an "];
 
 const DELEGATED_CONTENT_MARKERS: &[&str] = &[
     "do not modify",

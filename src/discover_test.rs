@@ -118,7 +118,9 @@ fn test_derive_claude_output_path_uses_first_non_empty_line() {
 #[test]
 fn test_find_grok_files_collects_chat_history_only() {
     let dir = temp_dir("discover-grok");
-    let session_dir = dir.join("project").join("019f15e0-2078-7bb1-98d0-5554a486aafc");
+    let session_dir = dir
+        .join("project")
+        .join("019f15e0-2078-7bb1-98d0-5554a486aafc");
     fs::create_dir_all(&session_dir).unwrap();
     fs::write(session_dir.join("chat_history.jsonl"), "{}\n").unwrap();
     fs::write(dir.join("project").join("prompt_history.jsonl"), "{}\n").unwrap();

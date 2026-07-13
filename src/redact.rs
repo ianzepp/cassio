@@ -37,8 +37,7 @@ pub fn redact_export(parsed: &ParsedSession) -> ParsedSession {
     training.metadata.git_branch =
         redact_optional(&mut audit, training.metadata.git_branch.as_deref());
     training.metadata.title = redact_optional(&mut audit, training.metadata.title.as_deref());
-    training.metadata.version =
-        redact_optional(&mut audit, training.metadata.version.as_deref());
+    training.metadata.version = redact_optional(&mut audit, training.metadata.version.as_deref());
     training.metadata.models_seen = training
         .metadata
         .models_seen

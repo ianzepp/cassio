@@ -225,6 +225,8 @@ push = true
 # hermes = "~/.hermes"
 # opencode = "~/.local/share/opencode/storage"
 # pi = "~/.pi/agent/sessions"
+# grok = "~/.grok/sessions"
+# cursor = "~/.cursor/projects"
 ```
 
 CLI flags always override config values. With the config above, `cassio --all` just works without `-o`.
@@ -256,6 +258,8 @@ CLI flags always override config values. With the config above, `cassio --all` j
 | `sources.hermes` | string | `~/.hermes` | Override Hermes log path |
 | `sources.opencode` | string | `~/.local/share/opencode/storage` | Override OpenCode log path |
 | `sources.pi` | string | `~/.pi/agent/sessions` | Override pi log path |
+| `sources.grok` | string | `~/.grok/sessions` | Override Grok CLI log path |
+| `sources.cursor` | string | `~/.cursor/projects` | Override Cursor agent transcript path |
 
 ## Summary statistics
 
@@ -382,7 +386,7 @@ cassio compact all --model llama3.1
 
 This runs three steps in sequence:
 
-1. **Sessions**: discovers all tool sources (Claude, Codex, Hermes, OpenCode, pi) and converts new logs to `.md` transcripts
+1. **Sessions**: discovers all tool sources (Claude, Codex, Hermes, OpenCode, pi, Grok, Cursor) and converts new logs to `.md` transcripts
 2. **Dailies**: compacts pending days into `.daily.md` summaries
 3. **Monthlies**: synthesizes months that have compactions but no `.monthly.md` yet
 
@@ -391,7 +395,7 @@ Each step skips work that's already done, so it's safe to run repeatedly (e.g. v
 ```
 === Step 1: Processing sessions ===
 
-Found 5 source(s): claude, codex, hermes, opencode, pi
+Found 7 source(s): claude, codex, hermes, opencode, pi, grok, cursor
 ...
   Done: 14 processed, 99 skipped, 5005 up-to-date
 

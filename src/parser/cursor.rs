@@ -106,7 +106,9 @@ fn parse_lines<I: Iterator<Item = String>>(
             "assistant" => {
                 let mut blocks = Vec::new();
                 let mut has_text = false;
-                if let Some(content) = message.and_then(|m| m.get("content")).and_then(|v| v.as_array())
+                if let Some(content) = message
+                    .and_then(|m| m.get("content"))
+                    .and_then(|v| v.as_array())
                 {
                     for block in content {
                         match block.get("type").and_then(|v| v.as_str()) {
@@ -180,7 +182,8 @@ fn parse_lines<I: Iterator<Item = String>>(
         }
     }
 
-    let mut meta = metadata.ok_or_else(|| CassioError::Other("No Cursor session metadata found".into()))?;
+    let mut meta =
+        metadata.ok_or_else(|| CassioError::Other("No Cursor session metadata found".into()))?;
     meta.session_kind = classify_session_kind(&messages);
     stats.duration_seconds = match (first_timestamp, last_timestamp) {
         (Some(first), Some(last)) if last >= first => Some((last - first).num_seconds()),

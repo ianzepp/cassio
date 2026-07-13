@@ -26,21 +26,21 @@ fn test_parse_minimal_cursor_session() {
 
 #[test]
 fn test_parse_cursor_tool_use_blocks() {
-    let lines = vec![
-        line(json!({
-            "role": "assistant",
-            "message": {"content": [
-                {"type": "text", "text": "Reading file"},
-                {"type": "tool_use", "name": "Read", "input": {"path": "src/lib.rs"}}
-            ]}
-        })),
-    ];
+    let lines = vec![line(json!({
+        "role": "assistant",
+        "message": {"content": [
+            {"type": "text", "text": "Reading file"},
+            {"type": "tool_use", "name": "Read", "input": {"path": "src/lib.rs"}}
+        ]}
+    }))];
 
     let session = CursorParser::parse_from_lines(lines.into_iter()).unwrap();
     assert_eq!(session.stats.tool_calls, 1);
     assert!(session.stats.files_read.contains("src/lib.rs"));
     assert!(session.messages.iter().any(|msg| {
-        msg.content.iter().any(|block| matches!(block, ContentBlock::ToolUse { name, .. } if name == "Read"))
+        msg.content
+            .iter()
+            .any(|block| matches!(block, ContentBlock::ToolUse { name, .. } if name == "Read"))
     }));
 }
 
