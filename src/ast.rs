@@ -54,6 +54,7 @@ pub enum Tool {
     Pi,
     Grok,
     Cursor,
+    Kimi,
 }
 
 impl std::fmt::Display for Tool {
@@ -68,6 +69,7 @@ impl std::fmt::Display for Tool {
             Tool::Pi => write!(f, "pi"),
             Tool::Grok => write!(f, "grok"),
             Tool::Cursor => write!(f, "cursor"),
+            Tool::Kimi => write!(f, "kimi"),
         }
     }
 }

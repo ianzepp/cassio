@@ -106,6 +106,7 @@ fn format_metadata(meta: &SessionMetadata, w: &mut dyn Write) -> Result<(), Cass
             }
         }
         Tool::Cursor => {}
+        Tool::Kimi => {}
     }
 
     if let Some(ref branch) = meta.git_branch {
@@ -207,7 +208,7 @@ fn format_summary(
     // Tool calls label varies by tool
     let tool_label = match metadata.tool {
         Tool::Codex => "Function calls",
-        Tool::Hermes => "Tool calls",
+        Tool::Hermes | Tool::Kimi => "Tool calls",
         _ => "Tool calls",
     };
     writeln!(

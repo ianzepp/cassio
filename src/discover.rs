@@ -44,7 +44,7 @@ use walkdir::WalkDir;
 use crate::ast::Tool;
 use crate::config::SourcesConfig;
 
-const ALL_TOOLS: [Tool; 8] = [
+const ALL_TOOLS: [Tool; 9] = [
     Tool::Claude,
     Tool::ClaudeDesktop,
     Tool::Codex,
@@ -53,6 +53,7 @@ const ALL_TOOLS: [Tool; 8] = [
     Tool::Pi,
     Tool::Grok,
     Tool::Cursor,
+    Tool::Kimi,
 ];
 
 /// Return the default log directory for a tool, or `None` if it does not exist.
@@ -73,6 +74,7 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
         Tool::Pi => home.join(".pi/agent/sessions"),
         Tool::Grok => home.join(".grok/sessions"),
         Tool::Cursor => home.join(".cursor/projects"),
+        Tool::Kimi => home.join(".kimi-code/sessions"),
     };
     if path.exists() { Some(path) } else { None }
 }
@@ -111,6 +113,7 @@ pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<
                 Tool::Pi => s.pi_path(),
                 Tool::Grok => s.grok_path(),
                 Tool::Cursor => s.cursor_path(),
+                Tool::Kimi => s.kimi_path(),
             });
             let path = config_path
                 .filter(|p| p.exists())
@@ -152,6 +155,9 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
         Some(Tool::Cursor) => {
             find_cursor_files(dir, &mut results);
         }
+        Some(Tool::Kimi) => {
+            find_kimi_files(dir, &mut results);
+        }
         None => {
             // Auto-detect based on directory content
             let dir_str = dir.to_string_lossy();
@@ -169,6 +175,8 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
                 find_grok_files(dir, &mut results);
             } else if dir_str.contains("agent-transcripts") {
                 find_cursor_files(dir, &mut results);
+            } else if dir_str.contains(".kimi-code") || dir_str.contains("/kimi-code/") {
+                find_kimi_files(dir, &mut results);
             } else if dir_str.contains("local-agent-mode-sessions") {
                 find_claude_files(dir, &mut results, Tool::ClaudeDesktop);
             } else {
@@ -354,6 +362,24 @@ fn find_cursor_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
     }
 }
 
+/// Collect Kimi Code wire.jsonl files under `dir`.
+///
+/// Kimi Code stores sessions under `~/.kimi-code/sessions/<workdir-hash>/session_<uuid>/`.
+/// Each session has an `agents/` directory containing one or more agent directories, each
+/// with a `wire.jsonl`. Only `wire.jsonl` files are session transcripts; other `.jsonl`
+/// files in `~/.kimi-code/` (e.g., `session_index.jsonl`) are index metadata and must be
+/// skipped. We walk into `agents/*/wire.jsonl` paths only.
+fn find_kimi_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
+    for entry in WalkDir::new(dir).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        let path_str = path.to_string_lossy();
+        // Only wire.jsonl files inside agents/ subdirectories are session transcripts
+        if path_str.ends_with("/wire.jsonl") {
+            results.push((Tool::Kimi, path.to_path_buf()));
+        }
+    }
+}
+
 /// Derive the output path `(year-month folder, filename)` for a session file.
 ///
 /// Used in batch mode to organize transcripts into `YYYY-MM/` subdirectories.
@@ -367,6 +393,7 @@ pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
         Tool::Pi => derive_pi_output_path(path),
         Tool::Grok => derive_grok_output_path(path),
         Tool::Cursor => derive_cursor_output_path(path),
+        Tool::Kimi => derive_kimi_output_path(path),
         Tool::OpenCode => {
             // For OpenCode we need the session data; use a placeholder
             ("unknown".to_string(), format!("unknown-{tool}.md"))
@@ -532,6 +559,26 @@ fn derive_pi_output_path(path: &Path) -> (String, String) {
         }
     }
     ("unknown".to_string(), "unknown-pi.md".to_string())
+}
+
+fn derive_kimi_output_path(path: &Path) -> (String, String) {
+    if let Some(ts) = crate::parser::kimi::kimi_started_at_from_source(path) {
+        let folder = format!("{:04}-{:02}", ts.year(), ts.month());
+        let stem = format!(
+            "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}-kimi",
+            ts.year(),
+            ts.month(),
+            ts.day(),
+            ts.hour(),
+            ts.minute(),
+            ts.second()
+        );
+        return (folder, format!("{stem}.md"));
+    }
+    if let Some(id) = crate::parser::kimi::kimi_session_id_from_source(path) {
+        return ("unknown".to_string(), format!("{id}-kimi.md"));
+    }
+    ("unknown".to_string(), "unknown-kimi.md".to_string())
 }
 
 fn read_first_line(path: &Path) -> Result<String, std::io::Error> {

@@ -32,6 +32,7 @@ pub mod codex;
 pub mod cursor;
 pub mod grok;
 pub mod hermes;
+pub mod kimi;
 pub mod opencode;
 pub mod pi;
 
@@ -97,6 +98,10 @@ pub fn detect_parser(path: &Path) -> Result<Box<dyn Parser>, CassioError> {
         return Ok(Box::new(cursor::CursorParser));
     }
 
+    if path_str.contains(".kimi-code") || path_str.contains("/kimi-code/") {
+        return Ok(Box::new(kimi::KimiCodeParser));
+    }
+
     // For .jsonl files, peek at first line to detect format (default: Claude).
     if path.extension().is_some_and(|e| e == "jsonl") {
         let first_line = read_first_line(path)?;
@@ -129,6 +134,10 @@ fn parser_for_jsonl_content(first_line: &str) -> Box<dyn Parser> {
         && !first_line.contains("\"sessionId\"")
     {
         Box::new(cursor::CursorParser)
+    } else if first_line.contains("\"type\":\"metadata\"")
+        && first_line.contains("\"protocol_version\"")
+    {
+        Box::new(kimi::KimiCodeParser)
     } else if first_line.contains("\"type\":\"system\"")
         || first_line.contains("\"type\":\"tool_result\"")
         || (first_line.contains("\"type\":\"assistant\"") && first_line.contains("\"tool_calls\""))

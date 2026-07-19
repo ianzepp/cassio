@@ -13,7 +13,7 @@ use crate::error::CassioError;
 use crate::pricing;
 
 const KNOWN_TOOL_SUFFIXES: &[&str] = &[
-    "claude", "codex", "hermes", "opencode", "pi", "grok", "cursor",
+    "claude", "codex", "hermes", "opencode", "pi", "grok", "cursor", "kimi",
 ];
 
 /// Stats parsed from a single session transcript file.

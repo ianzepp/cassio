@@ -1053,6 +1053,7 @@ fn process_file_list(
             Tool::Pi => Box::new(cassio::parser::pi::PiParser),
             Tool::Grok => Box::new(cassio::parser::grok::GrokParser),
             Tool::Cursor => Box::new(cassio::parser::cursor::CursorParser),
+            Tool::Kimi => Box::new(cassio::parser::kimi::KimiCodeParser),
         };
 
         match parser.parse_export(path) {

@@ -64,6 +64,7 @@ pub struct SourcesConfig {
     pub pi: Option<String>,
     pub grok: Option<String>,
     pub cursor: Option<String>,
+    pub kimi: Option<String>,
 }
 
 /// Embedding provider options used by `cassio index`.
@@ -333,6 +334,7 @@ pub fn init() -> Result<(), CassioError> {
 # pi = "~/.pi/agent/sessions"
 # grok = "~/.grok/sessions"
 # cursor = "~/.cursor/projects"
+# kimi = "~/.kimi-code/sessions"
 "#;
 
     if let Some(parent) = path.parent() {
@@ -549,6 +551,11 @@ impl SourcesConfig {
     /// Resolve the configured Cursor source path, expanding `~`.
     pub fn cursor_path(&self) -> Option<PathBuf> {
         self.cursor.as_deref().map(expand_tilde)
+    }
+
+    /// Resolve the configured Kimi Code source path, expanding `~`.
+    pub fn kimi_path(&self) -> Option<PathBuf> {
+        self.kimi.as_deref().map(expand_tilde)
     }
 }
 
