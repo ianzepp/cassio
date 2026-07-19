@@ -22,8 +22,8 @@ use chrono::{DateTime, Utc};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-use crate::ast::*;
 use crate::ast::TokenUsage;
+use crate::ast::*;
 use crate::error::CassioError;
 use crate::parser::Parser;
 use crate::parser::claude::format_tool_input;
@@ -39,9 +39,9 @@ pub struct KimiCodeParser;
 /// The source path is `agents/<agent>/wire.jsonl`, so the session directory is
 /// the great-grandparent (e.g. `session_236b3acc...` under `wd_faberlang_xxx/`).
 pub fn kimi_session_id_from_source(path: &Path) -> Option<String> {
-    path.parent()         // agents/main/wire.jsonl → agents/main/
-        .and_then(|p| p.parent())  // → agents/
-        .and_then(|p| p.parent())  // → session_abc/
+    path.parent() // agents/main/wire.jsonl → agents/main/
+        .and_then(|p| p.parent()) // → agents/
+        .and_then(|p| p.parent()) // → session_abc/
         .and_then(|d| d.file_name())
         .and_then(|n| n.to_str())
         .map(str::to_string)
@@ -51,15 +51,14 @@ pub fn kimi_session_id_from_source(path: &Path) -> Option<String> {
 ///
 /// Returns `None` if the state file is absent or unparseable.
 pub fn kimi_started_at_from_source(path: &Path) -> Option<DateTime<Utc>> {
-    let session_dir = path.parent()
+    let session_dir = path
+        .parent()
         .and_then(|p| p.parent())
         .and_then(|p| p.parent())?;
     let state_path = session_dir.join("state.json");
     let content = std::fs::read_to_string(state_path).ok()?;
     let state: Value = serde_json::from_str(&content).ok()?;
-    let created_at = state
-        .get("createdAt")
-        .and_then(|v| v.as_str())?;
+    let created_at = state.get("createdAt").and_then(|v| v.as_str())?;
     created_at.parse::<DateTime<Utc>>().ok()
 }
 
@@ -134,9 +133,7 @@ fn parse_lines<I: Iterator<Item = String>>(
             }
             "config.update" => {
                 // Track model changes from config updates
-                if let Some(model_alias) =
-                    record.get("modelAlias").and_then(|v| v.as_str())
-                {
+                if let Some(model_alias) = record.get("modelAlias").and_then(|v| v.as_str()) {
                     let model = model_alias.to_string();
                     if !models_seen.iter().any(|s| s == &model) {
                         models_seen.push(model.clone());
@@ -190,25 +187,18 @@ fn parse_lines<I: Iterator<Item = String>>(
             }
             "context.append_loop_event" => {
                 if let Some(event) = record.get("event").and_then(|v| v.as_object()) {
-                    let event_type = event
-                        .get("type")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let event_type = event.get("type").and_then(|v| v.as_str()).unwrap_or("");
 
                     match event_type {
                         "content.part" => {
                             if let Some(part) = event.get("part").and_then(|v| v.as_object()) {
-                                let part_type = part
-                                    .get("type")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("");
+                                let part_type =
+                                    part.get("type").and_then(|v| v.as_str()).unwrap_or("");
                                 let time = record.get("time").and_then(|v| v.as_i64());
                                 let timestamp = time_to_timestamp(time);
 
                                 if part_type == "text" {
-                                    if let Some(text) =
-                                        part.get("text").and_then(|v| v.as_str())
-                                    {
+                                    if let Some(text) = part.get("text").and_then(|v| v.as_str()) {
                                         let text = text.to_string();
                                         let blocks = if !text.trim().is_empty() {
                                             vec![ContentBlock::Text { text }]
@@ -227,20 +217,22 @@ fn parse_lines<I: Iterator<Item = String>>(
                                         }
                                     }
                                 } else if part_type == "think"
-                                    && let Some(think) =
-                                        part.get("think").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty())
-                                    {
-                                        stats.assistant_messages += 1;
-                                        messages.push(Message {
-                                            role: Role::Assistant,
-                                            timestamp,
-                                            model: current_model.clone(),
-                                            content: vec![ContentBlock::Thinking {
-                                                text: think.to_string(),
-                                            }],
-                                            usage: None,
-                                        });
-                                    }
+                                    && let Some(think) = part
+                                        .get("think")
+                                        .and_then(|v| v.as_str())
+                                        .filter(|t| !t.trim().is_empty())
+                                {
+                                    stats.assistant_messages += 1;
+                                    messages.push(Message {
+                                        role: Role::Assistant,
+                                        timestamp,
+                                        model: current_model.clone(),
+                                        content: vec![ContentBlock::Thinking {
+                                            text: think.to_string(),
+                                        }],
+                                        usage: None,
+                                    });
+                                }
                             }
                         }
                         "tool.call" => {
@@ -266,12 +258,10 @@ fn parse_lines<I: Iterator<Item = String>>(
                                 .and_then(|v| v.as_str())
                                 .unwrap_or("")
                                 .to_string();
-                            let (name, args) = pending_tools
-                                .remove(&tool_call_id)
-                                .unwrap_or((
-                                    "unknown".to_string(),
-                                    Value::Object(Default::default()),
-                                ));
+                            let (name, args) = pending_tools.remove(&tool_call_id).unwrap_or((
+                                "unknown".to_string(),
+                                Value::Object(Default::default()),
+                            ));
                             let tool_call_id_ref = tool_call_id.clone();
 
                             let time = record.get("time").and_then(|v| v.as_i64());
@@ -334,9 +324,7 @@ fn parse_lines<I: Iterator<Item = String>>(
                             });
                         }
                         "step.end" => {
-                            if let Some(usage) =
-                                event.get("usage").and_then(|v| v.as_object())
-                            {
+                            if let Some(usage) = event.get("usage").and_then(|v| v.as_object()) {
                                 let input_cache_read = usage
                                     .get("inputCacheRead")
                                     .and_then(|v| v.as_u64())
@@ -345,10 +333,8 @@ fn parse_lines<I: Iterator<Item = String>>(
                                     .get("inputCacheCreation")
                                     .and_then(|v| v.as_u64())
                                     .unwrap_or(0);
-                                let output = usage
-                                    .get("output")
-                                    .and_then(|v| v.as_u64())
-                                    .unwrap_or(0);
+                                let output =
+                                    usage.get("output").and_then(|v| v.as_u64()).unwrap_or(0);
                                 let input_other = usage
                                     .get("inputOther")
                                     .and_then(|v| v.as_u64())
@@ -375,39 +361,37 @@ fn parse_lines<I: Iterator<Item = String>>(
             }
             "context.append_message" => {
                 if let Some(msg) = record.get("message").and_then(|v| v.as_object()) {
-                    let role = msg
-                        .get("role")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("");
+                    let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
                     if role == "user"
-                        && let Some(content) = msg.get("content") {
-                            let text = if let Some(arr) = content.as_array() {
-                                arr.iter()
-                                    .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
-                                    .collect::<Vec<_>>()
-                                    .join("\n")
-                            } else if let Some(s) = content.as_str() {
-                                s.to_string()
-                            } else {
-                                continue;
-                            };
-                            let trimmed = text.trim();
-                            if trimmed.is_empty() {
-                                continue;
-                            }
-                            // These are system-injected user messages (goals, reminders)
-                            stats.user_messages += 1;
-                            sequence += 1;
-                            messages.push(Message {
-                                role: Role::User,
-                                timestamp: None,
-                                model: None,
-                                content: vec![ContentBlock::Text {
-                                    text: trimmed.to_string(),
-                                }],
-                                usage: None,
-                            });
+                        && let Some(content) = msg.get("content")
+                    {
+                        let text = if let Some(arr) = content.as_array() {
+                            arr.iter()
+                                .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        } else if let Some(s) = content.as_str() {
+                            s.to_string()
+                        } else {
+                            continue;
+                        };
+                        let trimmed = text.trim();
+                        if trimmed.is_empty() {
+                            continue;
                         }
+                        // These are system-injected user messages (goals, reminders)
+                        stats.user_messages += 1;
+                        sequence += 1;
+                        messages.push(Message {
+                            role: Role::User,
+                            timestamp: None,
+                            model: None,
+                            content: vec![ContentBlock::Text {
+                                text: trimmed.to_string(),
+                            }],
+                            usage: None,
+                        });
+                    }
                 }
             }
             "usage.record" => {
@@ -420,8 +404,8 @@ fn parse_lines<I: Iterator<Item = String>>(
         }
     }
 
-    let mut meta = metadata
-        .ok_or_else(|| CassioError::Other("No Kimi Code session metadata found".into()))?;
+    let mut meta =
+        metadata.ok_or_else(|| CassioError::Other("No Kimi Code session metadata found".into()))?;
     meta.session_kind = classify_session_kind(&messages);
     stats.duration_seconds = match (first_timestamp, last_timestamp) {
         (Some(first), Some(last)) if last >= first => Some((last - first).num_seconds()),
@@ -502,9 +486,9 @@ fn load_metadata_from_source(
     // Read state.json for metadata
     let state = kimi_state_path(session_dir)
         .and_then(|sp| {
-            std::fs::read_to_string(sp).ok().and_then(|c| {
-                serde_json::from_str::<KimiStateFile>(&c).ok()
-            })
+            std::fs::read_to_string(sp)
+                .ok()
+                .and_then(|c| serde_json::from_str::<KimiStateFile>(&c).ok())
         })
         .unwrap_or_default();
 
@@ -563,10 +547,7 @@ fn grok_tool_result_failed(output: &str) -> bool {
 }
 
 fn track_file_ops(stats: &mut SessionStats, tool_name: &str, result: &Value) {
-    let output = result
-        .get("output")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let output = result.get("output").and_then(|v| v.as_str()).unwrap_or("");
     let is_error = result
         .get("isError")
         .and_then(|v| v.as_bool())
@@ -612,17 +593,11 @@ fn format_kimi_tool_input(tool_name: &str, input: &Value) -> String {
             format!("file=\"{path}\"")
         }
         "Glob" => {
-            let pattern = input
-                .get("pattern")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
+            let pattern = input.get("pattern").and_then(|v| v.as_str()).unwrap_or("");
             format!("pattern=\"{pattern}\"")
         }
         "Bash" | "bash" => {
-            let cmd = input
-                .get("command")
-                .and_then(|c| c.as_str())
-                .unwrap_or("");
+            let cmd = input.get("command").and_then(|c| c.as_str()).unwrap_or("");
             let truncated = if cmd.len() > 200 {
                 format!("{}...", super::truncate(cmd, 200))
             } else {
@@ -637,12 +612,14 @@ fn format_kimi_tool_input(tool_name: &str, input: &Value) -> String {
 fn extract_file_path(tool_name: &str, result: &Value) -> Option<String> {
     let args = result.get("args")?;
     match tool_name {
-        "Read" | "read" | "Write" | "write" | "Edit" | "edit" => {
-            args.get("path").and_then(|v| v.as_str()).map(str::to_string)
-        }
-        "Glob" | "glob" => {
-            args.get("pattern").and_then(|v| v.as_str()).map(str::to_string)
-        }
+        "Read" | "read" | "Write" | "write" | "Edit" | "edit" => args
+            .get("path")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
+        "Glob" | "glob" => args
+            .get("pattern")
+            .and_then(|v| v.as_str())
+            .map(str::to_string),
         _ => None,
     }
 }

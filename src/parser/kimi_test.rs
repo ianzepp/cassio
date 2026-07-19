@@ -68,7 +68,13 @@ fn test_parse_tool_calls() {
     // Messages: [user, text "Let me read...", tool_result Read, text "Here's what I found."]
     let tool_msg = &session.messages[2];
     assert_eq!(tool_msg.role, Role::Assistant);
-    if let ContentBlock::ToolResult { name, success, summary, .. } = &tool_msg.content[0] {
+    if let ContentBlock::ToolResult {
+        name,
+        success,
+        summary,
+        ..
+    } = &tool_msg.content[0]
+    {
         assert_eq!(name, "Read");
         assert!(success);
         assert_eq!(summary, r#"file="src/main.rs""#);
