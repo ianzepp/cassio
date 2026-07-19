@@ -94,6 +94,7 @@ Cassio reads the native log format of each tool and normalizes everything into t
 | Tool | Log format | Default path |
 |------|-----------|-------------|
 | Claude Code | JSONL (one record per line) | `~/.claude/projects` |
+| Claude Desktop | JSONL (one record per line) | `~/Library/Application Support/Claude/local-agent-mode-sessions` |
 | OpenAI Codex | JSONL (`rollout-*.jsonl` files) | `~/.codex/sessions` |
 | Hermes | SQLite `state.db` plus legacy JSON/JSONL sessions | `~/.hermes` |
 | OpenCode | Fragmented JSON (session/message/part dirs) | `~/.local/share/opencode/storage` |
@@ -224,6 +225,7 @@ push = true
 # Override default source paths (optional)
 # [sources]
 # claude = "~/.claude/projects"
+# claude_desktop = "~/Library/Application Support/Claude/local-agent-mode-sessions"
 # codex = "~/.codex/sessions"
 # hermes = "~/.hermes"
 # opencode = "~/.local/share/opencode/storage"
@@ -258,6 +260,7 @@ CLI flags always override config values. With the config above, `cassio --all` j
 | `git.commit` | bool | `false` | Auto-commit output files after processing |
 | `git.push` | bool | `false` | Auto-push after committing |
 | `sources.claude` | string | `~/.claude/projects` | Override Claude Code log path |
+| `sources.claude_desktop` | string | `~/Library/Application Support/Claude/local-agent-mode-sessions` | Override Claude Desktop log path |
 | `sources.codex` | string | `~/.codex/sessions` | Override Codex log path |
 | `sources.hermes` | string | `~/.hermes` | Override Hermes log path |
 | `sources.opencode` | string | `~/.local/share/opencode/storage` | Override OpenCode log path |
@@ -400,7 +403,7 @@ Each step skips work that's already done, so it's safe to run repeatedly (e.g. v
 ```
 === Step 1: Processing sessions ===
 
-Found 9 source(s): claude, codex, hermes, opencode, pi, kimi, grok, cursor
+Found 10 source(s): claude, claude_desktop, codex, hermes, opencode, pi, kimi, grok, cursor
 ...
   Done: 14 processed, 99 skipped, 5005 up-to-date
 
