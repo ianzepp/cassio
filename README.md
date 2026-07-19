@@ -98,6 +98,9 @@ Cassio reads the native log format of each tool and normalizes everything into t
 | Hermes | SQLite `state.db` plus legacy JSON/JSONL sessions | `~/.hermes` |
 | OpenCode | Fragmented JSON (session/message/part dirs) | `~/.local/share/opencode/storage` |
 | pi | JSONL (one record per line) | `~/.pi/agent/sessions` |
+| Kimi Code | JSONL (`wire.jsonl` in `agents/*/`) | `~/.kimi-code/sessions` |
+| Grok | JSONL (one record per line) | `~/.grok/sessions` |
+| Cursor | JSONL (one record per line) | `~/.cursor/projects` |
 
 Format detection is automatic based on file paths and content.
 Hermes ingestion supports both the current SQLite `state.db` layout and older
@@ -226,6 +229,7 @@ push = true
 # opencode = "~/.local/share/opencode/storage"
 # pi = "~/.pi/agent/sessions"
 # grok = "~/.grok/sessions"
+# kimi = "~/.kimi-code/sessions"
 # cursor = "~/.cursor/projects"
 ```
 
@@ -259,6 +263,7 @@ CLI flags always override config values. With the config above, `cassio --all` j
 | `sources.opencode` | string | `~/.local/share/opencode/storage` | Override OpenCode log path |
 | `sources.pi` | string | `~/.pi/agent/sessions` | Override pi log path |
 | `sources.grok` | string | `~/.grok/sessions` | Override Grok CLI log path |
+| `sources.kimi` | string | `~/.kimi-code/sessions` | Override Kimi Code session log path |
 | `sources.cursor` | string | `~/.cursor/projects` | Override Cursor agent transcript path |
 
 ## Summary statistics
@@ -395,7 +400,7 @@ Each step skips work that's already done, so it's safe to run repeatedly (e.g. v
 ```
 === Step 1: Processing sessions ===
 
-Found 7 source(s): claude, codex, hermes, opencode, pi, grok, cursor
+Found 9 source(s): claude, codex, hermes, opencode, pi, kimi, grok, cursor
 ...
   Done: 14 processed, 99 skipped, 5005 up-to-date
 
@@ -634,3 +639,16 @@ Input (JSONL/JSON) → Parser → AST (Session) → Formatter → Output (txt/js
 ```
 
 The AST layer cleanly separates parsing from formatting, making it straightforward to add new input parsers or output formatters. The compaction pipeline operates on formatted output, extracting key signals and sending them through the selected LLM provider for structured summarization.
+
+## Adding a new tool
+
+To add support for a new AI coding tool, you need to:
+
+1. Add the tool variant to `src/ast.rs::Tool`
+2. Create a parser in `src/parser/<name>.rs` implementing the `Parser` trait
+3. Register it in `src/discover.rs` (add to `ALL_TOOLS`, `default_source_path`, `find_*_files`, `derive_*_output_path`)
+4. Add it to `src/config.rs` `SourcesConfig` struct and `*Path()` methods
+5. Add detection logic in `src/parser/mod.rs` (path-based and content-based)
+6. Update `src/formatter/emoji_text.rs` to handle the new tool variant
+7. Add the parser to `src/main.rs` `process_file_list`
+8. Add the tool suffix to `src/summary.rs::KNOWN_TOOL_SUFFIXES`
