@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const MAX_UNWRAP: usize = 14;
+const MAX_UNWRAP: usize = 11;
 const MAX_EXPECT: usize = 0;
 const MAX_PANIC: usize = 0;
 const MAX_UNREACHABLE: usize = 0;
