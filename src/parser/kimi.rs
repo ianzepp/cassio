@@ -226,8 +226,8 @@ fn parse_lines<I: Iterator<Item = String>>(
                                             });
                                         }
                                     }
-                                } else if part_type == "think" {
-                                    if let Some(think) =
+                                } else if part_type == "think"
+                                    && let Some(think) =
                                         part.get("think").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty())
                                     {
                                         stats.assistant_messages += 1;
@@ -241,7 +241,6 @@ fn parse_lines<I: Iterator<Item = String>>(
                                             usage: None,
                                         });
                                     }
-                                }
                             }
                         }
                         "tool.call" => {
@@ -380,8 +379,8 @@ fn parse_lines<I: Iterator<Item = String>>(
                         .get("role")
                         .and_then(|v| v.as_str())
                         .unwrap_or("");
-                    if role == "user" {
-                        if let Some(content) = msg.get("content") {
+                    if role == "user"
+                        && let Some(content) = msg.get("content") {
                             let text = if let Some(arr) = content.as_array() {
                                 arr.iter()
                                     .filter_map(|b| b.get("text").and_then(|v| v.as_str()))
@@ -409,7 +408,6 @@ fn parse_lines<I: Iterator<Item = String>>(
                                 usage: None,
                             });
                         }
-                    }
                 }
             }
             "usage.record" => {
