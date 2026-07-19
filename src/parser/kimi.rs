@@ -228,21 +228,18 @@ fn parse_lines<I: Iterator<Item = String>>(
                                     }
                                 } else if part_type == "think" {
                                     if let Some(think) =
-                                        part.get("think").and_then(|v| v.as_str())
+                                        part.get("think").and_then(|v| v.as_str()).filter(|t| !t.trim().is_empty())
                                     {
-                                        let think = think.to_string();
-                                        if !think.trim().is_empty() {
-                                            stats.assistant_messages += 1;
-                                            messages.push(Message {
-                                                role: Role::Assistant,
-                                                timestamp,
-                                                model: current_model.clone(),
-                                                content: vec![ContentBlock::Thinking {
-                                                    text: think,
-                                                }],
-                                                usage: None,
-                                            });
-                                        }
+                                        stats.assistant_messages += 1;
+                                        messages.push(Message {
+                                            role: Role::Assistant,
+                                            timestamp,
+                                            model: current_model.clone(),
+                                            content: vec![ContentBlock::Thinking {
+                                                text: think.to_string(),
+                                            }],
+                                            usage: None,
+                                        });
                                     }
                                 }
                             }
@@ -396,20 +393,21 @@ fn parse_lines<I: Iterator<Item = String>>(
                                 continue;
                             };
                             let trimmed = text.trim();
-                            if !trimmed.is_empty() {
-                                // These are system-injected user messages (goals, reminders)
-                                stats.user_messages += 1;
-                                sequence += 1;
-                                messages.push(Message {
-                                    role: Role::User,
-                                    timestamp: None,
-                                    model: None,
-                                    content: vec![ContentBlock::Text {
-                                        text: trimmed.to_string(),
-                                    }],
-                                    usage: None,
-                                });
+                            if trimmed.is_empty() {
+                                continue;
                             }
+                            // These are system-injected user messages (goals, reminders)
+                            stats.user_messages += 1;
+                            sequence += 1;
+                            messages.push(Message {
+                                role: Role::User,
+                                timestamp: None,
+                                model: None,
+                                content: vec![ContentBlock::Text {
+                                    text: trimmed.to_string(),
+                                }],
+                                usage: None,
+                            });
                         }
                     }
                 }
@@ -541,7 +539,7 @@ fn load_metadata_from_source(
 }
 
 fn time_to_timestamp(ms: Option<i64>) -> Option<DateTime<Utc>> {
-    ms.and_then(|m| DateTime::from_timestamp_millis(m))
+    DateTime::from_timestamp_millis(ms?)
 }
 
 fn grok_tool_result_failed(output: &str) -> bool {
