@@ -26,6 +26,8 @@ pub struct SearchOptions {
     pub regex: bool,
     pub case_sensitive: bool,
     pub semantic: Option<SemanticSearchOptions>,
+    /// Separate root for `*.training.json` when not co-located under `root`.
+    pub training_root: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone)]
@@ -157,7 +159,7 @@ pub fn search(
     let mut hits = Vec::new();
 
     for artifact in artifact_order(options) {
-        for path in files_for_artifact(&target, artifact) {
+        for path in files_for_artifact_with_options(root, &target, artifact, options) {
             search_file(&path, artifact, &matcher, options, &mut hits)?;
             if hits.len() >= options.limit {
                 return Ok(hits);
@@ -177,6 +179,34 @@ fn artifact_order(options: &SearchOptions) -> Vec<SearchArtifact> {
         }
     }
     order
+}
+
+fn files_for_artifact_with_options(
+    root: &Path,
+    target: &Path,
+    artifact: SearchArtifact,
+    options: &SearchOptions,
+) -> Vec<PathBuf> {
+    if artifact == SearchArtifact::Training {
+        if let Some(training_root) = &options.training_root {
+            let training_target = if let Some(month) = &options.month {
+                training_root.join(month)
+            } else {
+                training_root.clone()
+            };
+            if training_target.exists() {
+                return files_for_artifact(&training_target, artifact);
+            }
+            // Fall through to co-located training under the transcript tree when
+            // the dedicated training root (or month slice) is missing.
+            return files_for_artifact(target, artifact);
+        }
+        return files_for_artifact(target, artifact);
+    }
+    // Keep non-training walks on the transcript tree only so a separate
+    // training_root is never scanned for markdown.
+    let _ = root;
+    files_for_artifact(target, artifact)
 }
 
 fn files_for_artifact(root: &Path, artifact: SearchArtifact) -> Vec<PathBuf> {

@@ -18,6 +18,7 @@ fn test_options() -> SearchOptions {
         regex: false,
         case_sensitive: false,
         semantic: None,
+        training_root: None,
     }
 }
 

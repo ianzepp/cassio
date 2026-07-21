@@ -18,6 +18,7 @@
 //! CLI flags take precedence over config file values. The merge happens in `run()`
 //! after subcommands are handled:
 //! - `--output` overrides `config.output`
+//! - `--training-output` overrides `config.training_output`
 //! - `--format` is only overridden by config when the CLI value is still the default
 //!   `"emoji-text"` — this prevents a config `format` from being silently ignored
 //!   when the user explicitly passes `--format` on the command line.
@@ -55,6 +56,10 @@ struct Cli {
     /// Output directory for batch mode
     #[arg(short, long, global = true)]
     output: Option<PathBuf>,
+
+    /// Directory for *.training.json exports (defaults to --output / config output)
+    #[arg(long, global = true)]
+    training_output: Option<PathBuf>,
 
     /// Output format
     #[arg(short, long, default_value = "emoji-text", global = true)]
@@ -348,6 +353,10 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             } else {
                 None
             };
+            let training_root = cli
+                .training_output
+                .clone()
+                .or_else(|| config.training_output_path());
             let options = cassio::search::SearchOptions {
                 month,
                 limit,
@@ -358,6 +367,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 regex,
                 case_sensitive,
                 semantic: semantic_options,
+                training_root,
             };
             return cassio::search::run_search(&dir, &query, options);
         }
@@ -385,8 +395,12 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         "--output is required (or set via `cassio set output <path>`)".into(),
                     )
                 })?;
+            let training_root = cli
+                .training_output
+                .clone()
+                .or_else(|| config.training_output_path());
             let embedding = config.embedding.as_ref();
-            let options = index_options_from_config(
+            let mut options = index_options_from_config(
                 embedding,
                 month,
                 include_training,
@@ -397,6 +411,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 model,
                 base_url,
             );
+            options.training_root = training_root;
             if cli.dry_run {
                 println!("cassio index: dry run, no index written");
                 println!("Output: {}", dir.display());
@@ -472,6 +487,10 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         .format
                         .parse()
                         .map_err(|e: String| CassioError::Other(e))?;
+                    let training_output = cli
+                        .training_output
+                        .clone()
+                        .or_else(|| config.training_output_path());
                     let sources = discover::discover_all_sources_with_config(&config.sources);
                     if sources.is_empty() {
                         eprintln!("No session sources found, skipping.");
@@ -490,6 +509,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                             process_file_list(
                                 &files,
                                 &output_dir,
+                                training_output.as_deref(),
                                 cli.force,
                                 format,
                                 cli.filter_dir.as_deref(),
@@ -668,6 +688,9 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
     if cli.output.is_none() {
         cli.output = config.output_path();
     }
+    if cli.training_output.is_none() {
+        cli.training_output = config.training_output_path();
+    }
 
     // Merge format: CLI arg (if not default) → config value → "emoji-text"
     if cli.format == "emoji-text"
@@ -735,6 +758,7 @@ fn index_options_from_config(
         timeout_secs: timeout_secs
             .or_else(|| embedding.and_then(|cfg| cfg.timeout_secs))
             .unwrap_or(defaults.timeout_secs),
+        training_root: None,
     }
 }
 
@@ -751,7 +775,7 @@ fn maybe_auto_index(output_dir: &Path, config: &Config, dry_run: bool) -> Result
     }
 
     eprintln!("\n=== Updating semantic index ===\n");
-    let options = index_options_from_config(
+    let mut options = index_options_from_config(
         Some(embedding),
         None,
         false,
@@ -762,6 +786,7 @@ fn maybe_auto_index(output_dir: &Path, config: &Config, dry_run: bool) -> Result
         None,
         None,
     );
+    options.training_root = config.training_output_path();
     cassio::index::run_index(output_dir, options)
 }
 
@@ -907,6 +932,7 @@ fn run_batch_mode(
     process_file_list(
         &files,
         output_dir,
+        cli.training_output.as_deref(),
         cli.force,
         format,
         cli.filter_dir.as_deref(),
@@ -971,6 +997,7 @@ fn run_all_mode(cli: &Cli, config: &Config, format: OutputFormat) -> Result<(), 
         process_file_list(
             &files,
             output_dir,
+            cli.training_output.as_deref(),
             cli.force,
             format,
             cli.filter_dir.as_deref(),
@@ -1000,6 +1027,8 @@ fn run_all_mode(cli: &Cli, config: &Config, format: OutputFormat) -> Result<(), 
 /// PHASE 2: OUTPUT PATH DERIVATION
 /// Compute the `YYYY-MM/filename.md` path within `output_dir` using
 /// `derive_output_path_for`. Create parent directories as needed.
+/// `*.training.json` files go to `training_output` when set, otherwise
+/// beside the transcript under `output_dir`.
 ///
 /// PHASE 3: PARSING AND WRITING
 /// Parse the session with the appropriate tool parser and write formatted output.
@@ -1011,6 +1040,7 @@ fn run_all_mode(cli: &Cli, config: &Config, format: OutputFormat) -> Result<(), 
 fn process_file_list(
     files: &[(Tool, PathBuf)],
     output_dir: &Path,
+    training_output: Option<&Path>,
     force: bool,
     format: OutputFormat,
     filter_dir: Option<&Path>,
@@ -1020,6 +1050,7 @@ fn process_file_list(
     let mut processed = 0u32;
     let mut skipped = 0u32;
     let mut up_to_date = 0u32;
+    let training_dir = training_output.unwrap_or(output_dir);
 
     for (i, (tool, path)) in files.iter().enumerate() {
         if (i + 1) == 1 || (i + 1) % 100 == 0 {
@@ -1036,13 +1067,28 @@ fn process_file_list(
         }
 
         let (folder, stem) = derive_output_stem_for(*tool, path)?;
-        let out_path = output_dir
+        let primary_root = match format {
+            OutputFormat::TrainingJson => training_dir,
+            _ => output_dir,
+        };
+        let out_path = primary_root
             .join(&folder)
             .join(output_filename(stem.as_str(), format));
+        let training_path = training_dir
+            .join(&folder)
+            .join(format!("{stem}.training.json"));
 
-        if !force && is_up_to_date(path, &out_path) {
-            up_to_date += 1;
-            continue;
+        if !force {
+            let primary_ok = is_up_to_date(path, &out_path);
+            let training_ok = if format == OutputFormat::EmojiText {
+                is_up_to_date(path, &training_path)
+            } else {
+                true
+            };
+            if primary_ok && training_ok {
+                up_to_date += 1;
+                continue;
+            }
         }
 
         let parser: Box<dyn Parser> = match tool {
@@ -1081,13 +1127,7 @@ fn process_file_list(
                 if dry_run {
                     eprintln!("  would write: {}", out_path.display());
                     if format == OutputFormat::EmojiText {
-                        eprintln!(
-                            "  would write: {}",
-                            output_dir
-                                .join(&folder)
-                                .join(format!("{stem}.training.json"))
-                                .display()
-                        );
+                        eprintln!("  would write: {}", training_path.display());
                     }
                     processed += 1;
                 } else {
@@ -1099,10 +1139,10 @@ fn process_file_list(
                     let mut file = fs::File::create(&out_path)?;
                     formatter.format(&parsed, &mut file)?;
                     if format == OutputFormat::EmojiText {
-                        let training_path = output_dir
-                            .join(&folder)
-                            .join(format!("{stem}.training.json"));
-                        let mut training_file = fs::File::create(training_path)?;
+                        if let Some(parent) = training_path.parent() {
+                            fs::create_dir_all(parent)?;
+                        }
+                        let mut training_file = fs::File::create(&training_path)?;
                         cassio::formatter::training_json::TrainingJsonFormatter
                             .format(&parsed, &mut training_file)?;
                     }

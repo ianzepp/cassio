@@ -97,6 +97,7 @@ fn test_expand_tilde_relative_unchanged() {
 fn test_config_deserialize() {
     let toml_str = r#"
 output = "~/transcripts"
+training_output = "~/training"
 format = "emoji-text"
 provider = "openai"
 base_url = "http://127.0.0.1:18173/v1"
@@ -124,6 +125,7 @@ pi = "~/.pi/agent/sessions"
 "#;
     let config: Config = toml::from_str(toml_str).unwrap();
     assert_eq!(config.output.as_deref(), Some("~/transcripts"));
+    assert_eq!(config.training_output.as_deref(), Some("~/training"));
     assert_eq!(config.format.as_deref(), Some("emoji-text"));
     assert_eq!(config.provider.as_deref(), Some("openai"));
     assert_eq!(
@@ -177,6 +179,23 @@ fn test_config_output_path_expands_tilde() {
     let path = config.output_path().unwrap();
     let home = dirs::home_dir().unwrap();
     assert_eq!(path, home.join("transcripts"));
+}
+
+#[test]
+fn test_config_training_output_path_expands_tilde() {
+    let config = Config {
+        training_output: Some("~/training".to_string()),
+        ..Default::default()
+    };
+    let path = config.training_output_path().unwrap();
+    let home = dirs::home_dir().unwrap();
+    assert_eq!(path, home.join("training"));
+}
+
+#[test]
+fn test_config_training_output_path_none_when_unset() {
+    let config = Config::default();
+    assert!(config.training_output_path().is_none());
 }
 
 // --- resolve_key tests ---

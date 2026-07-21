@@ -81,9 +81,18 @@ Structured JSONL for programmatic consumption. Metadata on the first line, one m
 
 ### training-json
 
-Canonical machine-readable session export for downstream dataset work. In batch mode, `emoji-text` now writes a sibling `*.training.json` file beside each transcript. You can also emit it directly:
+Canonical machine-readable session export for downstream dataset work. In batch
+mode, `emoji-text` also writes a `*.training.json` file per session. By default
+that file is co-located with the transcript; set `training_output` (or
+`--training-output`) to write training JSON into a separate directory with the
+same `YYYY-MM/` layout:
 
 ```sh
+cassio set training_output "~/personal/training"
+cassio --all -o ~/personal/transcripts
+# → markdown under ~/personal/transcripts/YYYY-MM/
+# → training JSON under ~/personal/training/YYYY-MM/
+
 cassio --format training-json session.jsonl
 ```
 
@@ -133,16 +142,23 @@ cassio ~/.claude/projects -o ~/transcripts
 Output is organized into `YYYY-MM/` subdirectories:
 
 ```
-~/transcripts/
+~/transcripts/                    # config: output
   2025-11/
     2025-11-12T21-52-16-claude.md
-    2025-11-12T21-52-16-claude.training.json
     2025-11-11T14-12-49-codex.md
-    2025-11-11T14-12-49-codex.training.json
   2025-12/
     2025-12-01T09-30-00-opencode.md
+
+~/training/                       # config: training_output (optional)
+  2025-11/
+    2025-11-12T21-52-16-claude.training.json
+    2025-11-11T14-12-49-codex.training.json
+  2025-12/
     2025-12-01T09-30-00-opencode.training.json
 ```
+
+Without `training_output`, the `*.training.json` files are written beside each
+`.md` under `output` (legacy co-located layout).
 
 ### Process everything at once
 
@@ -191,6 +207,7 @@ Manage individual values:
 
 ```sh
 cassio set output "~/transcripts"   # default output directory
+cassio set training_output "~/training"  # separate *.training.json root
 cassio set format jsonl             # default output format
 cassio set format training-json
 cassio set git.commit true          # auto-commit after processing
@@ -205,6 +222,7 @@ The resulting config file:
 
 ```toml
 output = "~/transcripts"
+training_output = "~/training"
 format = "jsonl"
 model = "llama3.1"
 provider = "ollama"
@@ -241,7 +259,8 @@ CLI flags always override config values. With the config above, `cassio --all` j
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `output` | string | *(none)* | Default output directory |
+| `output` | string | *(none)* | Default output directory for transcripts, dailies, and monthlies |
+| `training_output` | string | *(none)* | Default directory for `*.training.json` (same `YYYY-MM/` layout). When unset, training JSON is co-located under `output` |
 | `format` | string | `emoji-text` | Default output format (`emoji-text`, `jsonl`, or `training-json`) |
 | `model` | string | `llama3.1` | Default model name (passed to the selected provider) |
 | `provider` | string | `ollama` | LLM provider for compaction (`ollama`, `claude`, `codex`, `openrouter`, or `openai`) |
@@ -444,6 +463,7 @@ Arguments:
 
 Options:
   -o, --output <DIR>          Output directory for batch mode
+      --training-output <DIR> Directory for *.training.json (default: co-located under --output)
   -f, --format <FORMAT>        Output format: emoji-text, jsonl, training-json [default: emoji-text]
       --all                    Discover and process all tools' default paths
       --force                  Regenerate even if output is newer than input

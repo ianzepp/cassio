@@ -103,6 +103,12 @@ pub struct EmbeddingConfig {
 pub struct Config {
     /// Default output directory for transcripts and compaction files.
     pub output: Option<String>,
+    /// Default directory for `*.training.json` exports.
+    ///
+    /// When set, batch mode writes training JSON here (same `YYYY-MM/` layout)
+    /// instead of beside each transcript under `output`. When unset, training
+    /// JSON is co-located with transcripts (legacy layout).
+    pub training_output: Option<String>,
     /// Default output format: `"emoji-text"`, `"jsonl"`, or `"training-json"`.
     pub format: Option<String>,
     /// Default model name passed to the LLM provider during compaction.
@@ -149,6 +155,14 @@ impl Config {
     /// they should require the user to supply `--output` on the command line.
     pub fn output_path(&self) -> Option<PathBuf> {
         self.output.as_deref().map(expand_tilde)
+    }
+
+    /// Resolve the configured training-JSON directory, expanding a leading `~`.
+    ///
+    /// Returns `None` when unset; callers then co-locate training files under
+    /// the transcript `output` directory.
+    pub fn training_output_path(&self) -> Option<PathBuf> {
+        self.training_output.as_deref().map(expand_tilde)
     }
 }
 
@@ -277,6 +291,10 @@ pub fn init() -> Result<(), CassioError> {
 # Default output directory for transcripts, dailies, and monthlies
 # output = "~/transcripts"
 
+# Default directory for *.training.json exports (same YYYY-MM/ layout).
+# When unset, training JSON is written beside each transcript under output.
+# training_output = "~/training"
+
 # Default output format: "emoji-text", "jsonl", or "training-json"
 # format = "emoji-text"
 
@@ -346,6 +364,7 @@ pub fn init() -> Result<(), CassioError> {
     eprintln!();
     eprintln!("Edit it directly, or use:");
     eprintln!("  cassio set output ~/transcripts");
+    eprintln!("  cassio set training_output ~/training");
     eprintln!("  cassio set git.commit true");
     eprintln!("  cassio get");
 

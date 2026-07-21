@@ -91,12 +91,61 @@ fn default_file_selection_excludes_training_metadata() {
     fs::write(month.join("2026-04-30T10-00-00-codex.md"), "session").unwrap();
     fs::write(month.join("2026-04-30T10-00-00-codex.training.json"), "{}").unwrap();
 
-    let files = files_to_index(&root, false);
+    let without_training = IndexOptions {
+        include_training: false,
+        ..IndexOptions::default()
+    };
+    let files = files_to_index(&root, &without_training);
     assert_eq!(files.len(), 3);
-    let files = files_to_index(&root, true);
+
+    let with_training = IndexOptions {
+        include_training: true,
+        ..IndexOptions::default()
+    };
+    let files = files_to_index(&root, &with_training);
     assert_eq!(files.len(), 4);
 
     fs::remove_dir_all(&root).ok();
+}
+
+#[test]
+fn file_selection_uses_separate_training_root() {
+    let pid = std::process::id();
+    let root = std::env::temp_dir().join(format!("cassio_index_tx_{pid}"));
+    let training = std::env::temp_dir().join(format!("cassio_index_tr_{pid}"));
+    let month = root.join("2026-04");
+    let training_month = training.join("2026-04");
+    fs::create_dir_all(&month).unwrap();
+    fs::create_dir_all(&training_month).unwrap();
+    fs::write(month.join("2026-04-30T10-00-00-codex.md"), "session").unwrap();
+    fs::write(
+        month.join("2026-04-30T10-00-00-codex.training.json"),
+        "legacy-colocated",
+    )
+    .unwrap();
+    fs::write(
+        training_month.join("2026-04-30T10-00-00-codex.training.json"),
+        "canonical",
+    )
+    .unwrap();
+
+    let options = IndexOptions {
+        include_training: true,
+        training_root: Some(training.clone()),
+        ..IndexOptions::default()
+    };
+    let files = files_to_index(&root, &options);
+    assert_eq!(files.len(), 2);
+    assert!(files.iter().any(|p| p.ends_with("2026-04-30T10-00-00-codex.md")));
+    assert!(files.iter().any(|p| p.starts_with(&training)));
+    assert!(!files.iter().any(|p| p.starts_with(&root)
+        && p
+            .file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.ends_with(".training.json"))));
+
+    fs::remove_dir_all(&root).ok();
+    fs::remove_dir_all(&training).ok();
 }
 
 #[test]

@@ -42,6 +42,8 @@ pub struct IndexOptions {
     pub base_url: String,
     pub batch_size: usize,
     pub timeout_secs: u64,
+    /// Separate root for `*.training.json` when not co-located under `root`.
+    pub training_root: Option<PathBuf>,
 }
 
 impl Default for IndexOptions {
@@ -55,6 +57,7 @@ impl Default for IndexOptions {
             base_url: DEFAULT_BASE_URL.to_string(),
             batch_size: 16,
             timeout_secs: 120,
+            training_root: None,
         }
     }
 }
@@ -114,12 +117,13 @@ pub fn build_index(root: &Path, options: &IndexOptions) -> Result<IndexReport, C
         options.provider, options.model, options.base_url
     );
 
-    let files = files_to_index(&target, options.include_training);
+    let files = files_to_index(&target, options);
     eprintln!("index: found {} file(s) to scan", files.len());
     let mut chunks = Vec::new();
     for (index, path) in files.iter().enumerate() {
+        let path_root = path_root_for_chunk(root, path, options);
         chunks.extend(chunk_file(
-            root,
+            path_root,
             path,
             options.include_paths,
             DEFAULT_CHUNK_CHARS,
@@ -160,8 +164,38 @@ pub fn build_index(root: &Path, options: &IndexOptions) -> Result<IndexReport, C
     })
 }
 
-fn files_to_index(root: &Path, include_training: bool) -> Vec<PathBuf> {
+fn files_to_index(root: &Path, options: &IndexOptions) -> Vec<PathBuf> {
     let mut paths = Vec::new();
+    // Dedicated training root: only index markdown from the transcript tree.
+    // Co-located leftovers under output are ignored so they are not double-counted.
+    let include_training_in_transcript_tree =
+        options.include_training && options.training_root.is_none();
+    collect_index_files(root, include_training_in_transcript_tree, false, &mut paths);
+
+    if options.include_training
+        && let Some(training_root) = &options.training_root
+    {
+        let training_target = if let Some(month) = &options.month {
+            training_root.join(month)
+        } else {
+            training_root.clone()
+        };
+        if training_target.exists() {
+            collect_index_files(&training_target, true, true, &mut paths);
+        }
+    }
+
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn collect_index_files(
+    root: &Path,
+    include_training: bool,
+    training_only: bool,
+    paths: &mut Vec<PathBuf>,
+) {
     for entry in WalkDir::new(root).into_iter().filter_map(Result::ok) {
         let path = entry.path();
         if !path.is_file() {
@@ -170,13 +204,23 @@ fn files_to_index(root: &Path, include_training: bool) -> Vec<PathBuf> {
         let Some(artifact) = artifact_for_path(path) else {
             continue;
         };
+        if training_only && artifact != SearchArtifact::Training {
+            continue;
+        }
         if artifact == SearchArtifact::Training && !include_training {
             continue;
         }
         paths.push(path.to_path_buf());
     }
-    paths.sort();
-    paths
+}
+
+fn path_root_for_chunk<'a>(root: &'a Path, path: &Path, options: &'a IndexOptions) -> &'a Path {
+    if let Some(training_root) = options.training_root.as_ref()
+        && path.starts_with(training_root)
+    {
+        return training_root.as_path();
+    }
+    root
 }
 
 fn chunk_file(
