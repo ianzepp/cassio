@@ -13,17 +13,7 @@ use walkdir::WalkDir;
 use crate::error::CassioError;
 use crate::pricing;
 
-const KNOWN_TOOL_SUFFIXES: &[&str] = &[
-    "claude-chat",
-    "claude",
-    "codex",
-    "hermes",
-    "opencode",
-    "pi",
-    "grok",
-    "cursor",
-    "kimi",
-];
+
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DayMetrics {
@@ -277,13 +267,8 @@ fn parse_session_filename(name: &str) -> Option<(String, String)> {
     if !stem.contains('T') {
         return None;
     }
-    for suffix in KNOWN_TOOL_SUFFIXES {
-        let marker = format!("-{suffix}");
-        if stem.ends_with(&marker) {
-            return Some((date.to_string(), (*suffix).to_string()));
-        }
-    }
-    None
+    let tool = crate::ast::session_tool_suffix(stem)?;
+    Some((date.to_string(), tool.to_string()))
 }
 
 fn parse_session(

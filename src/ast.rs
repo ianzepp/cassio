@@ -79,6 +79,48 @@ impl std::fmt::Display for Tool {
     }
 }
 
+/// Tool name suffixes on formatted session files (`*-{suffix}.md`).
+///
+/// Longer multi-segment suffixes first so `claude-chat` is not parsed as `chat`.
+/// Used by compact discovery, metrics rails, and summary tables.
+pub const SESSION_TOOL_SUFFIXES: &[&str] = &[
+    "claude-chat",
+    "claude",
+    "codex",
+    "hermes",
+    "opencode",
+    "pi",
+    "grok",
+    "cursor",
+    "kimi",
+];
+
+/// If `stem` (filename without extension) ends with a known `-{tool}` suffix, return that tool.
+pub fn session_tool_suffix(stem: &str) -> Option<&'static str> {
+    for suffix in SESSION_TOOL_SUFFIXES {
+        // Avoid allocating: require a '-' separator before the suffix.
+        if stem.len() > suffix.len()
+            && stem.ends_with(suffix)
+            && stem.as_bytes()[stem.len() - suffix.len() - 1] == b'-'
+        {
+            return Some(*suffix);
+        }
+    }
+    None
+}
+
+/// True when `name` looks like a formatted session transcript (`YYYY-MM-DD…-{tool}.md`).
+pub fn is_session_transcript_filename(name: &str) -> bool {
+    let stem = if let Some(s) = name.strip_suffix(".md") {
+        s
+    } else if let Some(s) = name.strip_suffix(".txt") {
+        s
+    } else {
+        return false;
+    };
+    session_tool_suffix(stem).is_some()
+}
+
 /// A complete, normalized AI coding session ready for formatting.
 ///
 /// WHY: Grouping metadata, messages, and stats into one struct lets formatters

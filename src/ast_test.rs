@@ -13,6 +13,43 @@ fn test_tool_display() {
 }
 
 #[test]
+fn test_session_tool_suffix_prefers_claude_chat_over_chat() {
+    assert_eq!(
+        session_tool_suffix("2026-03-28T13-00-21-claude-chat"),
+        Some("claude-chat")
+    );
+    assert_eq!(
+        session_tool_suffix("2026-03-28T13-00-21-claude"),
+        Some("claude")
+    );
+    assert_eq!(
+        session_tool_suffix("2026-04-12T10-00-00-codex"),
+        Some("codex")
+    );
+    assert_eq!(
+        session_tool_suffix("2026-04-12T10-00-00-grok"),
+        Some("grok")
+    );
+    // Bare "chat" is not a known tool — must not match via rsplit of claude-chat.
+    assert_eq!(session_tool_suffix("2026-03-28T13-00-21-chat"), None);
+}
+
+#[test]
+fn test_is_session_transcript_filename_includes_claude_chat() {
+    assert!(is_session_transcript_filename(
+        "2026-03-28T13-00-21-claude-chat.md"
+    ));
+    assert!(is_session_transcript_filename(
+        "2026-04-12T10-00-00-codex.md"
+    ));
+    assert!(is_session_transcript_filename(
+        "2026-07-01T12-00-00-grok.md"
+    ));
+    assert!(!is_session_transcript_filename("2026-03-28.daily.md"));
+    assert!(!is_session_transcript_filename("readme.md"));
+}
+
+#[test]
 fn test_tool_serde_roundtrip() {
     let json = serde_json::to_string(&Tool::Claude).unwrap();
     assert_eq!(json, "\"claude\"");

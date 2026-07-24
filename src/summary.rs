@@ -12,18 +12,7 @@ use walkdir::WalkDir;
 use crate::error::CassioError;
 use crate::pricing;
 
-// Longer multi-segment suffixes first so `claude-chat` is not parsed as `chat`.
-const KNOWN_TOOL_SUFFIXES: &[&str] = &[
-    "claude-chat",
-    "claude",
-    "codex",
-    "hermes",
-    "opencode",
-    "pi",
-    "grok",
-    "cursor",
-    "kimi",
-];
+
 
 /// Stats parsed from a single session transcript file.
 #[derive(Default)]
@@ -201,14 +190,8 @@ fn parse_session_filename(name: &str) -> Option<(String, String)> {
         return None;
     }
 
-    // Prefer longest known suffix so multi-segment tools (claude-chat) match correctly.
-    for suffix in KNOWN_TOOL_SUFFIXES {
-        let marker = format!("-{suffix}");
-        if stem.ends_with(&marker) {
-            return Some((date.to_string(), (*suffix).to_string()));
-        }
-    }
-    None
+    let tool = crate::ast::session_tool_suffix(stem)?;
+    Some((date.to_string(), tool.to_string()))
 }
 
 fn parse_transcript_stats(

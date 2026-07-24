@@ -1323,16 +1323,8 @@ fn write_atomic(path: &Path, content: &str) -> Result<(), CassioError> {
 }
 
 fn is_session_transcript_name(name: &str) -> bool {
-    let stem = if let Some(stem) = name.strip_suffix(".md") {
-        stem
-    } else if let Some(stem) = name.strip_suffix(".txt") {
-        stem
-    } else {
-        return false;
-    };
-
-    let tool = stem.rsplit('-').next().unwrap_or("");
-    matches!(tool, "claude" | "codex" | "hermes" | "opencode" | "pi")
+    // Shared longest-match suffixes (includes claude-chat, grok, cursor, kimi).
+    crate::ast::is_session_transcript_filename(name)
 }
 
 fn is_daily_summary_name(name: &str) -> bool {
