@@ -103,7 +103,8 @@ Cassio reads the native log format of each tool and normalizes everything into t
 | Tool | Log format | Default path |
 |------|-----------|-------------|
 | Claude Code | JSONL (one record per line) | `~/.claude/projects` |
-| Claude Desktop | JSONL (one record per line) | `~/Library/Application Support/Claude/local-agent-mode-sessions` |
+| Claude Desktop (Code) | JSONL (one record per line) | `~/Library/Application Support/Claude/local-agent-mode-sessions` |
+| Claude Chat | Privacy export `conversations.json` (zip or dir) | via `--claude-chat <path>` |
 | OpenAI Codex | JSONL (`rollout-*.jsonl` files) | `~/.codex/sessions` |
 | Hermes | SQLite `state.db` plus legacy JSON/JSONL sessions | `~/.hermes` |
 | OpenCode | Fragmented JSON (session/message/part dirs) | `~/.local/share/opencode/storage` |
@@ -112,7 +113,9 @@ Cassio reads the native log format of each tool and normalizes everything into t
 | Grok | JSONL (one record per line) | `~/.grok/sessions` |
 | Cursor | JSONL (one record per line) | `~/.cursor/projects` |
 
-Format detection is automatic based on file paths and content.
+Format detection is automatic based on file paths and content for coding tools.
+Claude Chat history is **not** auto-discovered: export from Claude
+(Settings → Privacy → Export data), then import with `--claude-chat`.
 Hermes ingestion supports both the current SQLite `state.db` layout and older
 `sessions/*.{json,jsonl}` exports. A Hermes source path may point at a single
 Hermes state root or at a parent directory containing multiple
@@ -132,6 +135,20 @@ cassio session.jsonl
 ```sh
 cat session.jsonl | cassio
 ```
+
+### Import Claude Chat privacy export
+
+Claude.ai / Desktop **Chat** sessions are not local JSONL. Export them from
+Settings → Privacy → Export data, then:
+
+```sh
+cassio --claude-chat ~/Desktop/data-….zip -o ~/transcripts
+cassio --claude-chat ~/Desktop/data-….zip --force   # rewrite all
+```
+
+Accepts a `.zip`, a directory containing `conversations.json`, or the JSON file
+itself. Writes `YYYY-MM/YYYY-MM-DDTHH-MM-SS-claude-chat.md` (distinct from
+Claude Code `*-claude.md`).
 
 ### Batch mode: directory in, directory out
 
@@ -466,6 +483,7 @@ Options:
       --training-output <DIR> Directory for *.training.json (default: co-located under --output)
   -f, --format <FORMAT>        Output format: emoji-text, jsonl, training-json [default: emoji-text]
       --all                    Discover and process all tools' default paths
+      --claude-chat <PATH>     Import Claude Chat privacy export (zip/dir/json)
       --force                  Regenerate even if output is newer than input
       --detached               Ignore config file; all options must be explicit
       --filter-dir <FILTER_DIR>  Only process sessions whose working directory is under this path

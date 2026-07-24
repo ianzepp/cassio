@@ -3,6 +3,7 @@ use super::*;
 #[test]
 fn test_tool_display() {
     assert_eq!(Tool::Claude.to_string(), "claude");
+    assert_eq!(Tool::ClaudeChat.to_string(), "claude-chat");
     assert_eq!(Tool::Codex.to_string(), "codex");
     assert_eq!(Tool::Hermes.to_string(), "hermes");
     assert_eq!(Tool::OpenCode.to_string(), "opencode");

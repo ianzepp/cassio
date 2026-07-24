@@ -68,6 +68,8 @@ pub fn default_source_path(tool: Tool) -> Option<PathBuf> {
         Tool::ClaudeDesktop => {
             home.join("Library/Application Support/Claude/local-agent-mode-sessions")
         }
+        // Claude Chat is imported via --claude-chat from a privacy export, not a live dir.
+        Tool::ClaudeChat => return None,
         Tool::Codex => home.join(".codex/sessions"),
         Tool::Hermes => home.join(".hermes"),
         Tool::OpenCode => home.join(".local/share/opencode/storage"),
@@ -107,6 +109,7 @@ pub fn discover_all_sources_with_config(sources: &Option<SourcesConfig>) -> Vec<
             let config_path = sources.as_ref().and_then(|s| match tool {
                 Tool::Claude => s.claude_path(),
                 Tool::ClaudeDesktop => s.claude_desktop_path(),
+                Tool::ClaudeChat => None,
                 Tool::Codex => s.codex_path(),
                 Tool::Hermes => s.hermes_path(),
                 Tool::OpenCode => s.opencode_path(),
@@ -136,6 +139,9 @@ pub fn find_session_files(dir: &Path, tool: Option<Tool>) -> Vec<(Tool, PathBuf)
     match tool {
         Some(tool @ Tool::Claude) | Some(tool @ Tool::ClaudeDesktop) => {
             find_claude_files(dir, &mut results, tool);
+        }
+        Some(Tool::ClaudeChat) => {
+            // Claude Chat sessions come from privacy exports via --claude-chat, not dir walk.
         }
         Some(Tool::Codex) => {
             find_codex_files(dir, &mut results);
@@ -388,6 +394,7 @@ fn find_kimi_files(dir: &Path, results: &mut Vec<(Tool, PathBuf)>) {
 pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
     match tool {
         Tool::Claude | Tool::ClaudeDesktop => derive_claude_output_path(path),
+        Tool::ClaudeChat => derive_claude_chat_output_path(path),
         Tool::Codex => derive_codex_output_path(path),
         Tool::Hermes => derive_hermes_output_path(path),
         Tool::Pi => derive_pi_output_path(path),
@@ -399,6 +406,29 @@ pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
             ("unknown".to_string(), format!("unknown-{tool}.md"))
         }
     }
+}
+
+/// Derive output path for a Claude Chat virtual path by reading the conversation
+/// `created_at` from the privacy export.
+fn derive_claude_chat_output_path(path: &Path) -> (String, String) {
+    use crate::parser::claude_chat::ClaudeChatParser;
+    use crate::parser::Parser;
+
+    if let Ok(parsed) = ClaudeChatParser.parse_export(path) {
+        let dt = parsed.session.metadata.started_at;
+        let folder = format!("{:04}-{:02}", dt.year(), dt.month());
+        let ts = format!(
+            "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}",
+            dt.year(),
+            dt.month(),
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second()
+        );
+        return (folder, format!("{ts}-claude-chat.md"));
+    }
+    ("unknown".to_string(), "unknown-claude-chat.md".to_string())
 }
 
 /// Derive the output path for a Claude session file by reading its first record's timestamp.

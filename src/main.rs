@@ -84,6 +84,11 @@ struct Cli {
     /// Show what would be processed without writing any files
     #[arg(long, global = true)]
     dry_run: bool,
+
+    /// Import Claude Chat privacy export (zip, dir, or conversations.json).
+    /// Processes every conversation in the export (use --force to rewrite existing).
+    #[arg(long, value_name = "PATH", global = true)]
+    claude_chat: Option<PathBuf>,
 }
 
 #[derive(Subcommand)]
@@ -703,6 +708,12 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
         .format
         .parse()
         .map_err(|e: String| CassioError::Other(e))?;
+
+    // Claude Chat privacy export is an explicit opt-in path (not auto-discovered).
+    if let Some(ref export) = cli.claude_chat {
+        return run_claude_chat_mode(export, &cli, &config, format);
+    }
+
     if cli.all {
         return run_all_mode(&cli, &config, format);
     }
@@ -951,6 +962,157 @@ fn run_batch_mode(
     Ok(())
 }
 
+/// Import every conversation from a Claude Chat privacy export into `--output`.
+///
+/// Accepts a `.zip`, a directory containing `conversations.json`, or the JSON file.
+/// Each conversation becomes `YYYY-MM/YYYY-MM-DDTHH-MM-SS-claude-chat.md`.
+/// Without `--force`, conversations whose output is newer than the export are skipped.
+///
+/// Loads the export once (important for large zip archives), then writes each session.
+fn run_claude_chat_mode(
+    export: &Path,
+    cli: &Cli,
+    config: &Config,
+    format: OutputFormat,
+) -> Result<(), CassioError> {
+    let output_dir = cli.output.as_ref().ok_or_else(|| {
+        CassioError::Other(
+            "--output is required for --claude-chat (or set via `cassio set output <path>`)".into(),
+        )
+    })?;
+
+    if !export.exists() {
+        return Err(CassioError::Other(format!(
+            "Claude Chat export not found: {}",
+            export.display()
+        )));
+    }
+
+    eprintln!("Importing Claude Chat export: {}", export.display());
+
+    let sessions = cassio::parser::claude_chat::parse_export_all(export)?;
+    let total = sessions.len();
+    eprintln!("Found {total} Claude Chat conversation(s)");
+
+    if total == 0 {
+        eprintln!("Nothing to import.");
+        return Ok(());
+    }
+
+    if !cli.dry_run {
+        cassio::git::sync_before_writing(output_dir, &config.git)?;
+    }
+
+    let training_dir = cli.training_output.as_deref().unwrap_or(output_dir);
+    let mut processed = 0u32;
+    let mut skipped = 0u32;
+    let mut up_to_date = 0u32;
+
+    for (i, parsed) in sessions.into_iter().enumerate() {
+        if (i + 1) == 1 || (i + 1) % 100 == 0 {
+            eprint!("\r  Processing {}/{}...", i + 1, total);
+        }
+
+        if parsed.session.stats.user_messages == 0 && parsed.session.stats.assistant_messages == 0 {
+            skipped += 1;
+            continue;
+        }
+
+        if let Some(filter) = cli.filter_dir.as_deref() {
+            let filter_str = filter.to_string_lossy();
+            if !parsed
+                .session
+                .metadata
+                .project_path
+                .starts_with(filter_str.as_ref())
+            {
+                skipped += 1;
+                continue;
+            }
+        }
+
+        let dt = parsed.session.metadata.started_at;
+        let folder = format!("{:04}-{:02}", dt.year(), dt.month());
+        let ts = format!(
+            "{:04}-{:02}-{:02}T{:02}-{:02}-{:02}",
+            dt.year(),
+            dt.month(),
+            dt.day(),
+            dt.hour(),
+            dt.minute(),
+            dt.second()
+        );
+        let stem = format!("{ts}-claude-chat");
+
+        let primary_root = match format {
+            OutputFormat::TrainingJson => training_dir,
+            _ => output_dir,
+        };
+        let out_path = primary_root
+            .join(&folder)
+            .join(output_filename(stem.as_str(), format));
+        let training_path = training_dir
+            .join(&folder)
+            .join(format!("{stem}.training.json"));
+
+        if !cli.force {
+            let primary_ok = is_up_to_date(export, &out_path);
+            let training_ok = if format == OutputFormat::EmojiText {
+                is_up_to_date(export, &training_path)
+            } else {
+                true
+            };
+            if primary_ok && training_ok {
+                up_to_date += 1;
+                continue;
+            }
+        }
+
+        if cli.dry_run {
+            eprintln!("  would write: {}", out_path.display());
+            if format == OutputFormat::EmojiText {
+                eprintln!("  would write: {}", training_path.display());
+            }
+            processed += 1;
+            continue;
+        }
+
+        if let Some(parent) = out_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let parsed = cassio::redact::redact_export(&parsed);
+        let formatter = format.formatter();
+        let mut file = fs::File::create(&out_path)?;
+        formatter.format(&parsed, &mut file)?;
+        if format == OutputFormat::EmojiText {
+            if let Some(parent) = training_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            let mut training_file = fs::File::create(&training_path)?;
+            cassio::formatter::training_json::TrainingJsonFormatter
+                .format(&parsed, &mut training_file)?;
+        }
+        processed += 1;
+    }
+
+    eprintln!("\r  Done: {processed} processed, {skipped} skipped, {up_to_date} up-to-date     ");
+
+    if !cli.dry_run {
+        maybe_auto_index(output_dir, config, cli.dry_run)?;
+        cassio::git::auto_commit_and_push(
+            output_dir,
+            &format!(
+                "cassio --claude-chat ({})",
+                Local::now().format("%Y-%m-%d")
+            ),
+            &config.git,
+        )?;
+    }
+
+    eprintln!("\nClaude Chat import done.");
+    Ok(())
+}
+
 /// Discover all installed tool sources and batch-process them into `--output`.
 ///
 /// Uses `discover::discover_all_sources_with_config` to find source directories,
@@ -1093,6 +1255,7 @@ fn process_file_list(
 
         let parser: Box<dyn Parser> = match tool {
             Tool::Claude | Tool::ClaudeDesktop => Box::new(cassio::parser::claude::ClaudeParser),
+            Tool::ClaudeChat => Box::new(cassio::parser::claude_chat::ClaudeChatParser),
             Tool::Codex => Box::new(cassio::parser::codex::CodexParser),
             Tool::Hermes => Box::new(cassio::parser::hermes::HermesParser),
             Tool::OpenCode => Box::new(cassio::parser::opencode::OpenCodeParser),
@@ -1228,8 +1391,13 @@ fn output_filename(stem: &str, format: OutputFormat) -> String {
 /// WHY: Comparing modification times lets batch mode skip already-processed files
 /// without storing any external state. Returns `false` when either file is missing
 /// or when modification times are unavailable (some filesystems do not support mtime).
+///
+/// Virtual Claude Chat paths (`…/conversations.json/<uuid>`) resolve to the real
+/// export root (zip / json / directory) so mtime checks work.
 fn is_up_to_date(input: &Path, output: &Path) -> bool {
-    let input_meta = match fs::metadata(input) {
+    let mtime_input = cassio::parser::claude_chat::export_root_from_virtual(input)
+        .unwrap_or_else(|| input.to_path_buf());
+    let input_meta = match fs::metadata(&mtime_input) {
         Ok(m) => m,
         Err(_) => return false,
     };

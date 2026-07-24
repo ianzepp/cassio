@@ -22,3 +22,4 @@ sha2 = "0.10"
 wait-timeout = "0.2"
 rusqlite = { version = "0.32", features = ["bundled"] }
 llama-cpp-2 = { version = "0.1.146", default-features = false }
+zip = { version = "2", default-features = false, features = ["deflate"] }

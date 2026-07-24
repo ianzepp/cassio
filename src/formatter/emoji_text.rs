@@ -88,6 +88,11 @@ fn format_metadata(meta: &SessionMetadata, w: &mut dyn Write) -> Result<(), Cass
                 writeln!(w, "{EMOJI_META} Version: {version}")?;
             }
         }
+        Tool::ClaudeChat => {
+            if let Some(ref title) = meta.title {
+                writeln!(w, "{EMOJI_META} Title: {title}")?;
+            }
+        }
         Tool::Codex => {
             if let Some(ref version) = meta.version {
                 writeln!(w, "{EMOJI_META} CLI: codex {version}")?;

@@ -48,6 +48,9 @@ pub enum Tool {
     Claude,
     #[serde(rename = "claude_desktop")]
     ClaudeDesktop,
+    /// Claude.ai / Claude Desktop Chat privacy export (`conversations.json`).
+    #[serde(rename = "claude_chat")]
+    ClaudeChat,
     Codex,
     Hermes,
     OpenCode,
@@ -63,6 +66,8 @@ impl std::fmt::Display for Tool {
             Tool::Claude => write!(f, "claude"),
             // WHY: ClaudeDesktop is an internal distinction; users always call it "claude"
             Tool::ClaudeDesktop => write!(f, "claude"),
+            // WHY: Distinct suffix so Chat exports never collide with Code `*-claude.md` names.
+            Tool::ClaudeChat => write!(f, "claude-chat"),
             Tool::Codex => write!(f, "codex"),
             Tool::Hermes => write!(f, "hermes"),
             Tool::OpenCode => write!(f, "opencode"),

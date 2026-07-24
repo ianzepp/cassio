@@ -28,6 +28,7 @@
 //!   utility module would be warranted.
 
 pub mod claude;
+pub mod claude_chat;
 pub mod codex;
 pub mod cursor;
 pub mod grok;
