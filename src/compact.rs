@@ -174,6 +174,8 @@ pub struct CompactOptions {
     pub max_retries: usize,
     pub resume: bool,
     pub max_input_bytes: usize,
+    /// When true: plan work and print destinations, but never call an LLM or write outputs.
+    pub dry_run: bool,
 }
 
 impl CompactOptions {
@@ -183,7 +185,13 @@ impl CompactOptions {
             max_retries: max_retries.max(1),
             resume: true,
             max_input_bytes: max_input_bytes.max(1),
+            dry_run: false,
         }
+    }
+
+    pub fn with_dry_run(mut self, dry_run: bool) -> Self {
+        self.dry_run = dry_run;
+        self
     }
 }
 
@@ -194,6 +202,7 @@ impl Default for CompactOptions {
             max_retries: LLM_RETRY_LIMIT,
             resume: true,
             max_input_bytes: DEFAULT_MAX_INPUT_BYTES,
+            dry_run: false,
         }
     }
 }
@@ -266,6 +275,29 @@ pub fn run_dailies(
     };
 
     let total = to_process.len();
+
+    if options.dry_run {
+        eprintln!(
+            "dry-run: would compact {total} day(s) (no LLM calls, no writes)"
+        );
+        for (i, (day, files)) in to_process.iter().enumerate() {
+            let month = day.get(..7).unwrap_or("unknown");
+            let relative = format!("{month}/{day}");
+            let plan_note = dry_run_daily_plan_note(day, files, options.max_input_bytes);
+            eprintln!(
+                "dailies: [{idx} of {total}] {relative}... would write {relative}.daily.md ({} sessions{plan_note})",
+                files.len(),
+                idx = i + 1,
+            );
+        }
+        eprintln!("finished: dry-run, {total} would compact, 0 failed");
+        return Ok(DailyRunReport {
+            compacted: total,
+            failed: 0,
+            failed_details: Vec::new(),
+        });
+    }
+
     let start = Instant::now();
     let mut compacted = 0usize;
     let mut failed = 0usize;
@@ -399,6 +431,17 @@ pub fn run_monthly(
         }
         daily_files
     };
+
+    if options.dry_run {
+        let kind = if use_weeklies { "weeklies" } else { "dailies" };
+        eprintln!(
+            "dry-run: would write {} from {} {} (no LLM calls, no writes)",
+            output_path.display(),
+            source_files.len(),
+            kind
+        );
+        return Ok(());
+    }
 
     let start = Instant::now();
 
@@ -598,6 +641,37 @@ pub fn run_weeklies(
     };
 
     let total = to_process.len();
+
+    if options.dry_run {
+        eprintln!(
+            "dry-run: would compact {total} week(s) (no LLM calls, no writes)"
+        );
+        for (i, (week_id, files)) in to_process.iter().enumerate() {
+            let out_display = match crate::metrics::iso_week_monday_public(week_id) {
+                Ok(monday) => {
+                    let month = monday.format("%Y-%m").to_string();
+                    output_dir
+                        .join(month)
+                        .join(format!("{week_id}.weekly.md"))
+                        .display()
+                        .to_string()
+                }
+                Err(_) => format!("<invalid-week>/{week_id}.weekly.md"),
+            };
+            eprintln!(
+                "weeklies: [{idx} of {total}] {week_id}... would write {out_display} ({} dailies)",
+                files.len(),
+                idx = i + 1,
+            );
+        }
+        eprintln!("finished: dry-run, {total} would compact, 0 failed");
+        return Ok(DailyRunReport {
+            compacted: total,
+            failed: 0,
+            failed_details: Vec::new(),
+        });
+    }
+
     let start = Instant::now();
     let mut compacted = 0usize;
     let mut failed = 0usize;
@@ -1124,6 +1198,32 @@ fn write_day_status(
     let body = serde_json::to_string_pretty(&status)
         .map_err(|e| CassioError::Other(format!("Failed to serialize day status: {e}")))?;
     write_atomic(&path, &body)
+}
+
+/// Local planning note for dry-run only: estimates LLM call shape without invoking a model.
+fn dry_run_daily_plan_note(day: &str, files: &[PathBuf], max_input_bytes: usize) -> String {
+    let mut sessions = Vec::new();
+    for file in files {
+        match extract_session(file) {
+            Ok(content) => {
+                let name = file
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("session")
+                    .to_string();
+                sessions.push((name, content));
+            }
+            Err(_) => {
+                return ", plan unavailable".to_string();
+            }
+        }
+    }
+    match plan_daily_compaction(day, &sessions, max_input_bytes) {
+        DailyCompactionPlan::Single(_) => ", 1 LLM call".to_string(),
+        DailyCompactionPlan::Chunked(chunks) => {
+            format!(", {} chunk LLM calls + 1 merge", chunks.len())
+        }
+    }
 }
 
 fn plan_daily_compaction(

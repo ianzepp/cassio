@@ -228,3 +228,44 @@ fn test_openai_provider_requires_base_url() {
     assert_eq!(err.class, FailureClass::Io);
     assert!(err.detail.contains("requires base_url"));
 }
+
+#[test]
+fn test_run_dailies_dry_run_no_writes_no_llm() {
+    let root = std::env::temp_dir().join(format!(
+        "cassio-dry-run-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let input = root.join("input").join("2026-06");
+    let output = root.join("output");
+    std::fs::create_dir_all(&input).unwrap();
+    std::fs::create_dir_all(&output).unwrap();
+
+    let session = input.join("2026-06-11T10-00-00-codex.md");
+    std::fs::write(
+        &session,
+        "📋 Session: test\n👤 Hello world\n🤖 Hi there\n",
+    )
+    .unwrap();
+
+    let options = CompactOptions::new(30, 1, DEFAULT_MAX_INPUT_BYTES).with_dry_run(true);
+    let report = run_dailies(
+        root.join("input").as_path(),
+        &output,
+        Some(1),
+        "should-not-be-called",
+        "openai",
+        Some("http://127.0.0.1:1/v1"),
+        &options,
+    )
+    .expect("dry-run should succeed without LLM");
+
+    assert_eq!(report.compacted, 1);
+    assert_eq!(report.failed, 0);
+    assert!(!output.join("2026-06").join("2026-06-11.daily.md").exists());
+    assert!(!output.join("2026-06").join(".cassio-checkpoints").exists());
+
+    std::fs::remove_dir_all(&root).ok();
+}

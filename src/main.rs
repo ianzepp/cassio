@@ -81,7 +81,7 @@ struct Cli {
     #[arg(long, global = true)]
     filter_dir: Option<PathBuf>,
 
-    /// Show what would be processed without writing any files
+    /// Show what would be processed without writing files or calling an LLM
     #[arg(long, global = true)]
     dry_run: bool,
 
@@ -540,7 +540,8 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         chunk_timeout,
                         max_retries,
                         default_max_input_bytes,
-                    );
+                    )
+                    .with_dry_run(cli.dry_run);
                     let output_dir = cli
                         .output
                         .clone()
@@ -626,11 +627,13 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
 
                     maybe_auto_index(&output_dir, &config, cli.dry_run)?;
 
-                    cassio::git::auto_commit_and_push(
-                        &output_dir,
-                        &format!("cassio compact all ({})", Local::now().format("%Y-%m-%d")),
-                        &config.git,
-                    )?;
+                    if !cli.dry_run {
+                        cassio::git::auto_commit_and_push(
+                            &output_dir,
+                            &format!("cassio compact all ({})", Local::now().format("%Y-%m-%d")),
+                            &config.git,
+                        )?;
+                    }
 
                     return Ok(());
                 }
@@ -660,7 +663,8 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         chunk_timeout,
                         max_retries,
                         default_max_input_bytes,
-                    );
+                    )
+                    .with_dry_run(cli.dry_run);
                     let input_dir = input
                         .or_else(|| cli.output.clone())
                         .or_else(|| config_output.clone())
@@ -696,14 +700,16 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         });
                     }
                     maybe_auto_index(&output_dir, &config, cli.dry_run)?;
-                    cassio::git::auto_commit_and_push(
-                        &output_dir,
-                        &format!(
-                            "cassio compact dailies ({})",
-                            Local::now().format("%Y-%m-%d")
-                        ),
-                        &config.git,
-                    )?;
+                    if !cli.dry_run {
+                        cassio::git::auto_commit_and_push(
+                            &output_dir,
+                            &format!(
+                                "cassio compact dailies ({})",
+                                Local::now().format("%Y-%m-%d")
+                            ),
+                            &config.git,
+                        )?;
+                    }
                     return Ok(());
                 }
                 CompactAction::Monthly {
@@ -720,7 +726,8 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         default_chunk_timeout_secs,
                         default_max_retries,
                         default_max_input_bytes,
-                    );
+                    )
+                    .with_dry_run(cli.dry_run);
                     let monthly_source = match source.as_str() {
                         "auto" => cassio::compact::MonthlySource::Auto,
                         "weeklies" | "weekly" => cassio::compact::MonthlySource::Weeklies,
@@ -741,7 +748,9 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                                     .into(),
                             )
                         })?;
-                    cassio::git::sync_before_writing(&dir, &config.git)?;
+                    if !cli.dry_run {
+                        cassio::git::sync_before_writing(&dir, &config.git)?;
+                    }
                     cassio::compact::run_monthly(
                         &dir,
                         &input,
@@ -752,11 +761,13 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         monthly_source,
                     )?;
                     maybe_auto_index(&dir, &config, cli.dry_run)?;
-                    cassio::git::auto_commit_and_push(
-                        &dir,
-                        &format!("cassio compact monthly {input}"),
-                        &config.git,
-                    )?;
+                    if !cli.dry_run {
+                        cassio::git::auto_commit_and_push(
+                            &dir,
+                            &format!("cassio compact monthly {input}"),
+                            &config.git,
+                        )?;
+                    }
                     return Ok(());
                 }
                 CompactAction::Weeklies {
@@ -785,7 +796,8 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         chunk_timeout,
                         max_retries,
                         default_max_input_bytes,
-                    );
+                    )
+                    .with_dry_run(cli.dry_run);
                     let input_dir = input
                         .or_else(|| cli.output.clone())
                         .or_else(|| config_output.clone())
@@ -821,14 +833,16 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         });
                     }
                     maybe_auto_index(&output_dir, &config, cli.dry_run)?;
-                    cassio::git::auto_commit_and_push(
-                        &output_dir,
-                        &format!(
-                            "cassio compact weeklies ({})",
-                            Local::now().format("%Y-%m-%d")
-                        ),
-                        &config.git,
-                    )?;
+                    if !cli.dry_run {
+                        cassio::git::auto_commit_and_push(
+                            &output_dir,
+                            &format!(
+                                "cassio compact weeklies ({})",
+                                Local::now().format("%Y-%m-%d")
+                            ),
+                            &config.git,
+                        )?;
+                    }
                     return Ok(());
                 }
             }
