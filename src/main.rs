@@ -194,10 +194,53 @@ enum Command {
         #[arg(long)]
         timeout: Option<u64>,
     },
-    /// Compact transcripts into daily/monthly analysis
+    /// Compact transcripts into daily/weekly/monthly analysis
     Compact {
         #[command(subcommand)]
         action: CompactAction,
+    },
+    /// Deterministic session metrics rails (no LLM)
+    Metrics {
+        #[command(subcommand)]
+        action: MetricsAction,
+    },
+    /// Case-study loss audit between evidence sets
+    Audit {
+        #[command(subcommand)]
+        action: AuditAction,
+    },
+}
+
+#[derive(Subcommand)]
+enum MetricsAction {
+    /// Aggregate metrics for one calendar day (YYYY-MM-DD)
+    Day {
+        /// Day YYYY-MM-DD
+        day: String,
+        /// Input directory of session transcripts
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+    },
+    /// Aggregate metrics for one ISO week (YYYY-Www)
+    Week {
+        /// ISO week YYYY-Www
+        week: String,
+        /// Input directory of session transcripts
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+    },
+}
+
+#[derive(Subcommand)]
+enum AuditAction {
+    /// Compare CaseStudyEvidence preservation between two markdown files
+    Loss {
+        /// Path to "expected" evidence markdown (e.g. daily or merged dailies)
+        #[arg(long)]
+        expected: PathBuf,
+        /// Path to "actual" evidence markdown (e.g. weekly or monthly)
+        #[arg(long)]
+        actual: PathBuf,
     },
 }
 
@@ -259,6 +302,33 @@ enum CompactAction {
         /// Base URL for provider=openai, such as http://127.0.0.1:18173/v1
         #[arg(long)]
         base_url: Option<String>,
+        /// Input source: auto (prefer weeklies), weeklies, or dailies
+        #[arg(long, default_value = "auto")]
+        source: String,
+    },
+    /// Compact daily summaries into ISO-week weeklies
+    Weeklies {
+        /// Input directory containing daily summaries
+        #[arg(short, long)]
+        input: Option<PathBuf>,
+        /// Maximum number of weeks to process
+        #[arg(short, long)]
+        limit: Option<usize>,
+        /// Model name passed to the selected provider
+        #[arg(short, long)]
+        model: Option<String>,
+        /// LLM provider: ollama, claude, codex, openrouter, or openai
+        #[arg(short, long)]
+        provider: Option<String>,
+        /// Base URL for provider=openai
+        #[arg(long)]
+        base_url: Option<String>,
+        /// Per-call timeout seconds
+        #[arg(long, default_value_t = 300)]
+        chunk_timeout: u64,
+        /// Maximum retries
+        #[arg(long, default_value_t = 3)]
+        max_retries: usize,
     },
 }
 
@@ -641,6 +711,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     model,
                     provider,
                     base_url,
+                    source,
                 } => {
                     let model = model.unwrap_or(default_model);
                     let provider = provider.unwrap_or(default_provider);
@@ -650,6 +721,16 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         default_max_retries,
                         default_max_input_bytes,
                     );
+                    let monthly_source = match source.as_str() {
+                        "auto" => cassio::compact::MonthlySource::Auto,
+                        "weeklies" | "weekly" => cassio::compact::MonthlySource::Weeklies,
+                        "dailies" | "daily" => cassio::compact::MonthlySource::Dailies,
+                        other => {
+                            return Err(CassioError::Other(format!(
+                                "invalid --source {other} (expected auto|weeklies|dailies)"
+                            )));
+                        }
+                    };
                     let dir = cli
                         .output
                         .clone()
@@ -668,6 +749,7 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                         &provider,
                         base_url.as_deref(),
                         &compact_options,
+                        monthly_source,
                     )?;
                     maybe_auto_index(&dir, &config, cli.dry_run)?;
                     cassio::git::auto_commit_and_push(
@@ -677,7 +759,177 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                     )?;
                     return Ok(());
                 }
+                CompactAction::Weeklies {
+                    input,
+                    limit,
+                    model,
+                    provider,
+                    base_url,
+                    chunk_timeout,
+                    max_retries,
+                } => {
+                    let model = model.unwrap_or_else(|| default_model.clone());
+                    let provider = provider.unwrap_or_else(|| default_provider.clone());
+                    let base_url = base_url.or_else(|| default_base_url.clone());
+                    let chunk_timeout = if chunk_timeout == 300 {
+                        default_chunk_timeout_secs
+                    } else {
+                        chunk_timeout
+                    };
+                    let max_retries = if max_retries == 3 {
+                        default_max_retries
+                    } else {
+                        max_retries
+                    };
+                    let compact_options = cassio::compact::CompactOptions::new(
+                        chunk_timeout,
+                        max_retries,
+                        default_max_input_bytes,
+                    );
+                    let input_dir = input
+                        .or_else(|| cli.output.clone())
+                        .or_else(|| config_output.clone())
+                        .ok_or_else(|| {
+                            CassioError::Other(
+                                "--input is required (or set via `cassio set output <path>`)"
+                                    .into(),
+                            )
+                        })?;
+                    let output_dir = cli
+                        .output
+                        .clone()
+                        .or(config_output)
+                        .unwrap_or_else(|| input_dir.clone());
+                    if !cli.dry_run {
+                        cassio::git::sync_before_writing(&output_dir, &config.git)?;
+                    }
+                    let report = cassio::compact::run_weeklies(
+                        &input_dir,
+                        &output_dir,
+                        limit,
+                        &model,
+                        &provider,
+                        base_url.as_deref(),
+                        &compact_options,
+                    )?;
+                    if report.failed > 0 {
+                        return Err(CassioError::PartialRun {
+                            operation: "cassio compact weeklies",
+                            completed: report.compacted,
+                            failed: report.failed,
+                            details: report.failed_details.join("; "),
+                        });
+                    }
+                    maybe_auto_index(&output_dir, &config, cli.dry_run)?;
+                    cassio::git::auto_commit_and_push(
+                        &output_dir,
+                        &format!(
+                            "cassio compact weeklies ({})",
+                            Local::now().format("%Y-%m-%d")
+                        ),
+                        &config.git,
+                    )?;
+                    return Ok(());
+                }
             }
+        }
+        Some(Command::Metrics { action }) => {
+            let config = if cli.detached {
+                Config::default()
+            } else {
+                Config::load()
+            };
+            let input = match &action {
+                MetricsAction::Day { input, .. } | MetricsAction::Week { input, .. } => input
+                    .clone()
+                    .or_else(|| cli.output.clone())
+                    .or_else(|| config.output_path())
+                    .ok_or_else(|| {
+                        CassioError::Other(
+                            "--input/--output required (or set cassio output)".into(),
+                        )
+                    })?,
+            };
+            let output = cli
+                .output
+                .clone()
+                .or_else(|| config.output_path())
+                .unwrap_or_else(|| input.clone());
+            match action {
+                MetricsAction::Day { day, .. } => {
+                    let path = cassio::metrics::write_day_metrics(&input, &output, &day)?;
+                    println!("{}", path.display());
+                }
+                MetricsAction::Week { week, .. } => {
+                    let path = cassio::metrics::write_week_metrics(&input, &output, &week)?;
+                    println!("{}", path.display());
+                }
+            }
+            return Ok(());
+        }
+        Some(Command::Audit { action }) => {
+            match action {
+                AuditAction::Loss { expected, actual } => {
+                    let exp_md = fs::read_to_string(&expected)?;
+                    let act_md = fs::read_to_string(&actual)?;
+                    let exp = cassio::evidence::parse_from_markdown(&exp_md)?
+                        .ok_or_else(|| {
+                            CassioError::Other("expected file has no CaseStudyEvidence".into())
+                        })?;
+                    let act = cassio::evidence::parse_from_markdown(&act_md)?
+                        .ok_or_else(|| {
+                            CassioError::Other("actual file has no CaseStudyEvidence".into())
+                        })?;
+                    let missing_q =
+                        cassio::evidence::missing_quotes(&exp.case_study_quotes, &act.case_study_quotes);
+                    let missing_d = cassio::evidence::missing_instruction_summaries(
+                        &exp.instruction_deltas,
+                        &act.instruction_deltas,
+                    );
+                    let quote_keep = if exp.case_study_quotes.is_empty() {
+                        1.0
+                    } else {
+                        1.0 - (missing_q.len() as f64 / exp.case_study_quotes.len() as f64)
+                    };
+                    let delta_keep = if exp.instruction_deltas.is_empty() {
+                        1.0
+                    } else {
+                        1.0 - (missing_d.len() as f64 / exp.instruction_deltas.len() as f64)
+                    };
+                    let corr_match = exp.volume.corrections == act.volume.corrections
+                        || exp.corrections.len() == act.corrections.len();
+                    println!("loss_audit:");
+                    println!("  quote_retention: {:.0}%", quote_keep * 100.0);
+                    println!("  instruction_delta_retention: {:.0}%", delta_keep * 100.0);
+                    println!(
+                        "  correction_count_match: {}",
+                        if corr_match { "yes" } else { "no" }
+                    );
+                    println!(
+                        "  expected_corrections: {} actual_corrections: {}",
+                        exp.corrections.len(),
+                        act.corrections.len()
+                    );
+                    if !missing_q.is_empty() {
+                        println!("  missing_quotes:");
+                        for q in &missing_q {
+                            println!("    - {}", q.chars().take(120).collect::<String>());
+                        }
+                    }
+                    if !missing_d.is_empty() {
+                        println!("  missing_instruction_deltas:");
+                        for d in &missing_d {
+                            println!("    - {d}");
+                        }
+                    }
+                    let pass = quote_keep >= 0.8 && delta_keep >= 1.0 && corr_match;
+                    println!("  gate: {}", if pass { "PASS" } else { "FAIL" });
+                    if !pass {
+                        return Err(CassioError::Other("loss audit gate failed".into()));
+                    }
+                }
+            }
+            return Ok(());
         }
         None => {}
     }

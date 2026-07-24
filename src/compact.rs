@@ -69,8 +69,20 @@ use crate::error::CassioError;
 
 const COMPACT_PROMPT: &str = include_str!("prompts/compact.md");
 const DAILY_MERGE_PROMPT: &str = include_str!("prompts/daily_merge.md");
+const WEEKLY_PROMPT: &str = include_str!("prompts/weekly.md");
+const WEEKLY_MERGE_PROMPT: &str = include_str!("prompts/weekly_merge.md");
 const MONTHLY_PROMPT: &str = include_str!("prompts/monthly.md");
 const MONTHLY_MERGE_PROMPT: &str = include_str!("prompts/monthly_merge.md");
+
+/// Which summaries feed monthly compaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MonthlySource {
+    /// Prefer weeklies when any exist for the month; else dailies.
+    #[default]
+    Auto,
+    Dailies,
+    Weeklies,
+}
 
 /// Default max input bytes per LLM call (~100KB ≈ 25K tokens at 4 bytes/token).
 ///
@@ -311,6 +323,7 @@ pub fn run_monthly(
     provider: &str,
     base_url: Option<&str>,
     options: &CompactOptions,
+    source: MonthlySource,
 ) -> Result<(), CassioError> {
     // Validate month format
     if month.len() != 7 || month.as_bytes()[4] != b'-' {
@@ -333,31 +346,65 @@ pub fn run_monthly(
         return Ok(());
     }
 
-    // Collect daily summary files sorted by date
+    let mut weekly_files: Vec<PathBuf> = Vec::new();
     let mut daily_files: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&month_dir) {
         for entry in entries.filter_map(|e| e.ok()) {
             let name = entry.file_name().to_string_lossy().to_string();
-            if is_daily_summary_name(&name) {
+            if is_weekly_summary_name(&name) {
+                weekly_files.push(entry.path());
+            } else if is_daily_summary_name(&name) {
                 daily_files.push(entry.path());
             }
         }
     }
+    weekly_files.sort();
     daily_files.sort();
 
-    if daily_files.is_empty() {
-        return Err(CassioError::Other(format!(
-            "No .daily.md files found in {month}/"
-        )));
-    }
+    let use_weeklies = match source {
+        MonthlySource::Weeklies => true,
+        MonthlySource::Dailies => false,
+        MonthlySource::Auto => !weekly_files.is_empty(),
+    };
 
-    eprintln!("monthly: {month} ({} daily files)", daily_files.len());
+    let source_files: Vec<PathBuf> = if use_weeklies {
+        if weekly_files.is_empty() {
+            return Err(CassioError::Other(format!(
+                "No .weekly.md files found in {month}/ (source=weeklies)"
+            )));
+        }
+        eprintln!(
+            "monthly: {month} ({} weekly files; source={:?})",
+            weekly_files.len(),
+            source
+        );
+        weekly_files
+    } else {
+        if daily_files.is_empty() {
+            return Err(CassioError::Other(format!(
+                "No .daily.md files found in {month}/"
+            )));
+        }
+        if matches!(source, MonthlySource::Auto) {
+            eprintln!(
+                "monthly: {month} ({} daily files; no weeklies, auto→dailies)",
+                daily_files.len()
+            );
+        } else {
+            eprintln!(
+                "monthly: {month} ({} daily files; source={:?})",
+                daily_files.len(),
+                source
+            );
+        }
+        daily_files
+    };
 
     let start = Instant::now();
 
     // Read all compaction contents
     let mut contents: Vec<(String, String)> = Vec::new(); // (filename, content)
-    for path in &daily_files {
+    for path in &source_files {
         let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
             continue;
         };
@@ -508,10 +555,87 @@ pub fn run_pending_monthlies(
     );
 
     for month in &pending {
-        run_monthly(dir, month, model, provider, base_url, options)?;
+        run_monthly(
+            dir,
+            month,
+            model,
+            provider,
+            base_url,
+            options,
+            MonthlySource::Auto,
+        )?;
     }
 
     Ok(())
+}
+
+/// Compact daily summaries into ISO-week weekly summaries.
+///
+/// Groups `.daily.md` files by ISO week. Skips weeks that already have a
+/// `.weekly.md`. Prefer writing under the Monday's `YYYY-MM/` directory.
+pub fn run_weeklies(
+    input_dir: &Path,
+    output_dir: &Path,
+    limit: Option<usize>,
+    model: &str,
+    provider: &str,
+    base_url: Option<&str>,
+    options: &CompactOptions,
+) -> Result<DailyRunReport, CassioError> {
+    let pending = find_pending_weeks(input_dir, output_dir)?;
+    if pending.is_empty() {
+        eprintln!("No pending weeks to compact.");
+        return Ok(DailyRunReport {
+            compacted: 0,
+            failed: 0,
+            failed_details: Vec::new(),
+        });
+    }
+
+    let to_process: Vec<_> = match limit {
+        Some(n) => pending.into_iter().take(n).collect(),
+        None => pending,
+    };
+
+    let total = to_process.len();
+    let start = Instant::now();
+    let mut compacted = 0usize;
+    let mut failed = 0usize;
+    let mut failed_details = Vec::new();
+
+    for (i, (week_id, files)) in to_process.iter().enumerate() {
+        eprint!("weeklies: [{} of {total}] {week_id}...", i + 1);
+        match compact_week(
+            output_dir,
+            week_id,
+            files,
+            model,
+            provider,
+            base_url,
+            options,
+        ) {
+            Ok(()) => {
+                eprintln!(" ok");
+                compacted += 1;
+            }
+            Err(e) => {
+                eprintln!(" [FAIL] {}", e.detail);
+                failed += 1;
+                failed_details.push(e.detail);
+            }
+        }
+    }
+
+    let elapsed = start.elapsed();
+    eprintln!(
+        "finished: {}, {compacted} compacted, {failed} failed",
+        format_elapsed(elapsed)
+    );
+    Ok(DailyRunReport {
+        compacted,
+        failed,
+        failed_details,
+    })
 }
 
 // ── Private helpers ───────────────────────────────────────────────────────────
@@ -1113,6 +1237,204 @@ fn is_session_transcript_name(name: &str) -> bool {
 
 fn is_daily_summary_name(name: &str) -> bool {
     name.ends_with(".daily.md") || name.ends_with(".compaction.md")
+}
+
+fn is_weekly_summary_name(name: &str) -> bool {
+    name.ends_with(".weekly.md")
+}
+
+fn find_pending_weeks(
+    input_dir: &Path,
+    output_dir: &Path,
+) -> Result<Vec<(String, Vec<PathBuf>)>, CassioError> {
+    use chrono::NaiveDate;
+
+    let mut by_week: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+
+    for entry in WalkDir::new(input_dir).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Some(name) = path.file_name().and_then(|n| n.to_str()) else {
+            continue;
+        };
+        let Some(day) = strip_daily_suffix(name) else {
+            continue;
+        };
+        if day.len() != 10 {
+            continue;
+        }
+        let Ok(date) = NaiveDate::parse_from_str(day, "%Y-%m-%d") else {
+            continue;
+        };
+        let week_id = crate::metrics::iso_week_id(date);
+        by_week.entry(week_id).or_default().push(path.to_path_buf());
+    }
+
+    let mut pending = Vec::new();
+    for (week_id, mut files) in by_week {
+        if weekly_summary_exists(output_dir, &week_id) {
+            continue;
+        }
+        files.sort();
+        pending.push((week_id, files));
+    }
+    Ok(pending)
+}
+
+fn weekly_summary_exists(output_dir: &Path, week_id: &str) -> bool {
+    // Search month dirs for the weekly file (week may span months; we write under Monday's month).
+    if let Ok(monday) = crate::metrics::iso_week_monday_public(week_id) {
+        let month = monday.format("%Y-%m").to_string();
+        if output_dir
+            .join(&month)
+            .join(format!("{week_id}.weekly.md"))
+            .exists()
+        {
+            return true;
+        }
+    }
+    // Fallback: scan
+    for entry in WalkDir::new(output_dir).max_depth(2).into_iter().filter_map(|e| e.ok()) {
+        if entry.file_name().to_string_lossy() == format!("{week_id}.weekly.md") {
+            return true;
+        }
+    }
+    false
+}
+
+fn compact_week(
+    output_dir: &Path,
+    week_id: &str,
+    files: &[PathBuf],
+    model: &str,
+    provider: &str,
+    base_url: Option<&str>,
+    options: &CompactOptions,
+) -> Result<(), DayFailure> {
+    let mut contents = Vec::new();
+    for file in files {
+        let extracted = std::fs::read_to_string(file).map_err(|e| DayFailure {
+            detail: format!("{week_id}: failed to read {}: {e}", file.display()),
+        })?;
+        let name = file
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("daily")
+            .to_string();
+        contents.push((name, extracted));
+    }
+
+    let monday = crate::metrics::iso_week_monday_public(week_id).map_err(|e| DayFailure {
+        detail: e.to_string(),
+    })?;
+    let month = monday.format("%Y-%m").to_string();
+    let out_dir = output_dir.join(&month);
+    std::fs::create_dir_all(&out_dir).map_err(|e| DayFailure {
+        detail: format!("{week_id}: failed to create {}: {e}", out_dir.display()),
+    })?;
+    let checkpoint_dir = out_dir.join(".cassio-checkpoints").join(week_id);
+    std::fs::create_dir_all(&checkpoint_dir).map_err(|e| DayFailure {
+        detail: format!(
+            "{week_id}: failed to create {}: {e}",
+            checkpoint_dir.display()
+        ),
+    })?;
+
+    let prompt_overhead = WEEKLY_PROMPT.len() + 100;
+    let total: usize = contents.iter().map(|(_, c)| c.len()).sum();
+    let output = if total + prompt_overhead <= options.max_input_bytes {
+        let input = build_monthly_input(WEEKLY_PROMPT, week_id, &contents);
+        let context = InvocationContext {
+            checkpoint_dir: &checkpoint_dir,
+            day: week_id,
+            phase: "weekly_single",
+            chunk_index: Some(1),
+            total_chunks: 1,
+        };
+        invoke_llm(&input, model, provider, base_url, options, context).map_err(|err| {
+            DayFailure {
+                detail: format!("{week_id}: weekly failed [{}] {}", err.class.as_str(), err.detail),
+            }
+        })?
+    } else {
+        let chunks = build_chunks(&contents, prompt_overhead, options.max_input_bytes);
+        let mut chunk_summaries = Vec::new();
+        for (i, chunk) in chunks.iter().enumerate() {
+            eprint!(" chunk [{}/{}]...", i + 1, chunks.len());
+            let input = build_monthly_input(WEEKLY_PROMPT, week_id, chunk);
+            let context = InvocationContext {
+                checkpoint_dir: &checkpoint_dir,
+                day: week_id,
+                phase: "weekly_chunk",
+                chunk_index: Some(i + 1),
+                total_chunks: chunks.len(),
+            };
+            let out = invoke_llm(&input, model, provider, base_url, options, context).map_err(
+                |err| DayFailure {
+                    detail: format!(
+                        "{week_id}: weekly chunk {} failed [{}] {}",
+                        i + 1,
+                        err.class.as_str(),
+                        err.detail
+                    ),
+                },
+            )?;
+            chunk_summaries.push((format!("week-chunk-{}", i + 1), out));
+        }
+        eprint!(" merging...");
+        let merge_input = build_monthly_input(WEEKLY_MERGE_PROMPT, week_id, &chunk_summaries);
+        let context = InvocationContext {
+            checkpoint_dir: &checkpoint_dir,
+            day: week_id,
+            phase: "weekly_merge",
+            chunk_index: None,
+            total_chunks: chunk_summaries.len(),
+        };
+        invoke_llm(&merge_input, model, provider, base_url, options, context).map_err(|err| {
+            DayFailure {
+                detail: format!(
+                    "{week_id}: weekly merge failed [{}] {}",
+                    err.class.as_str(),
+                    err.detail
+                ),
+            }
+        })?
+    };
+
+    if output.trim().is_empty() {
+        return Err(DayFailure {
+            detail: format!("{week_id}: empty weekly output"),
+        });
+    }
+
+    // Prefer mechanical evidence merge when parseable; append if model omitted.
+    let mut final_output = output;
+    let mut parts = Vec::new();
+    for (_, content) in &contents {
+        if let Ok(Some(ev)) = crate::evidence::parse_from_markdown(content) {
+            parts.push(ev);
+        }
+    }
+    if !parts.is_empty() {
+        let merged = crate::evidence::merge_evidence(week_id, "week", &parts);
+        if let Ok(section) = crate::evidence::to_markdown_section(&merged) {
+            if crate::evidence::extract_yaml_block(&final_output).is_none() {
+                final_output.push_str("\n\n");
+                final_output.push_str(&section);
+            }
+            for w in crate::evidence::validate_warnings(&merged) {
+                eprintln!("  evidence warn: {w}");
+            }
+        }
+    }
+
+    let out_path = out_dir.join(format!("{week_id}.weekly.md"));
+    std::fs::write(&out_path, final_output).map_err(|e| DayFailure {
+        detail: format!("{week_id}: write failed: {e}"),
+    })?;
+    Ok(())
 }
 
 fn strip_daily_suffix(name: &str) -> Option<&str> {

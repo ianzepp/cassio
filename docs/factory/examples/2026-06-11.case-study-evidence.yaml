@@ -1,0 +1,129 @@
+# Filled example for CaseStudyEvidence (period 2026-06-11).
+# Derived from experiment dailies (DeepSeek Pro + Luna) and session inventory.
+# Token/cost left null where not hand-verified from every session header.
+
+period: "2026-06-11"
+period_kind: day
+projects:
+  - minted-geek-swarm
+  - skills/factory
+  - AGENTS.md
+  - ainn
+  - monk-api
+volume:
+  sessions: 15
+  user_turns: null
+  corrections: 12
+  decisions: 25
+agents_used:
+  - tool: codex
+    model: gpt-5.5
+    sessions: 15
+    tokens_in: null
+    tokens_out: null
+    cost_usd: null
+instruction_deltas:
+  - summary: "PokerFace optional in factory skill (not removed)"
+    target: "skills/factory"
+    quote: "I don't want to remove it, but I will downgrade it to optional."
+    codified: true
+  - summary: "Deferred Findings / Future Work section + read-only review/bonsai pass at end of factory phase"
+    target: "skills/factory"
+    quote: null
+    codified: true
+  - summary: "Factory → Production → Delivery → Loop structure; Loop rename from FactoryLoop"
+    target: "skills/factory"
+    quote: "rename the reference called FactoryLoop into just simply Loop"
+    codified: true
+  - summary: "Slice vs phase vs epic terminology fixed in colony delivery docs"
+    target: "docs/colony-model"
+    quote: "I also don't understand why we're using the word slice here versus phase"
+    codified: true
+  - summary: "Cargo multi-filter guidance into AGENTS.md"
+    target: "AGENTS.md"
+    quote: null
+    codified: true
+  - summary: "Single-agent room schema clean break (no migration bridge)"
+    target: "minted-geek-swarm"
+    quote: "There doesn't need to be a migration bridge. This is all still rapidly in development"
+    codified: true
+corrections:
+  - type: ignored_instruction
+    quote: "Actually, I changed my mind. Go ahead and add those issues to a bugs.md in the colony model folder, and we'll deal with them at the end."
+    context: "Stopped immediate fix path; deferred findings ledger"
+    codified_into: "docs/colony-model/bugs.md"
+  - type: terminology
+    quote: "I also don't understand why we're using the word slice here versus phase, apparently interchangeably."
+    context: "Delivery vocabulary"
+    codified_into: "docs/colony-model"
+  - type: wrong_boundary
+    quote: "I have to be honest, your list of points here seems to overlap with what delivery itself does, just at a higher level."
+    context: "Factory vs Delivery scope"
+    codified_into: "skills/factory"
+  - type: over_hedging
+    quote: "Your concerns about IP are noted. You don't have to bring it up again."
+    context: "AINN creative brainstorm"
+    codified_into: null
+  - type: ignored_clean_break
+    quote: "There doesn't need to be a migration bridge. This is all still rapidly in development"
+    context: "Single-agent rooms"
+    codified_into: null
+  - type: over_abstraction
+    quote: "I don't want you to add a second layer of facades. I want you to refactor it so that instead of ems::write::patch_records the method/module is ems::data::update"
+    context: "EMS canonical operations"
+    codified_into: null
+  - type: wrong_boundary
+    quote: "root shouldn't be subject to any ACL restrictions ever. It's the whole point of being root."
+    context: "Root authority across services"
+    codified_into: null
+outcomes:
+  - unit: "colony model Slice 1 review + bugs.md"
+    result: deferred
+    sessions: 1
+    notes: "High-severity findings deferred to bugs.md"
+  - unit: "factory skill lifecycle redesign"
+    result: first_pass
+    sessions: 2
+    notes: "PokerFace optional, deferred findings, Production/Loop shape"
+  - unit: "colony factory phases D–AE"
+    result: autonomous_success
+    sessions: 1
+    notes: "Long autonomous run"
+  - unit: "multi-agent handoff phases AF–AN"
+    result: hardening
+    sessions: 1
+    notes: "User requested hardening subphase for integration stability"
+  - unit: "single-agent room flattening"
+    result: first_pass
+    sessions: 2
+    notes: "Clean break schema + audit"
+  - unit: "EMS data layer + Phase 61 find/filter parity"
+    result: autonomous_success
+    sessions: 3
+    notes: "Handlers relocation + parity audit"
+  - unit: "AINN project skeleton + GoalForge"
+    result: first_pass
+    sessions: 1
+    notes: "Side project"
+process_invocations:
+  - factory
+  - delivery
+  - goal-forge
+  - warmup
+  - bonsai
+  - housekeeping
+open_threads:
+  - "Repository-wide hygiene budget failures remain in several swarm repos"
+  - "Live-provider / deployment work deferred"
+  - "Root-level colony docs not in a git repo (commit limitation)"
+case_study_quotes:
+  - "Actually, I changed my mind. Go ahead and add those issues to a bugs.md in the colony model folder, and we'll deal with them at the end."
+  - "I also don't understand why we're using the word slice here versus phase, apparently interchangeably."
+  - "I have to be honest, your list of points here seems to overlap with what delivery itself does, just at a higher level."
+  - "I don't want to remove it, but I will downgrade it to optional."
+  - "There doesn't need to be a migration bridge. This is all still rapidly in development"
+  - "I don't want you to add a second layer of facades."
+  - "root shouldn't be subject to any ACL restrictions ever. It's the whole point of being root."
+  - "Your concerns about IP are noted. You don't have to bring it up again."
+metrics_ref: null
+notes: "Example hand-built from Phase A experiment dailies; re-emit via LLM after Phase C prompts ship."

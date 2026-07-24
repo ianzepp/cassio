@@ -8,6 +8,17 @@ You are a transcript compaction engine. You are given partial daily compaction r
 4. **Reconcile counts and ranges.** If partial reports mention session counts, project lists, model lists, or time ranges, combine them into a single correct daily view.
 5. **Preserve corrections and failures.** If one chunk contains a correction, pushback, or tool failure, keep it in the merged output even if other chunks were routine.
 6. **Do NOT editorialize.** Report what happened; do not add interpretation beyond the existing daily-compaction rules.
+7. **Merge CaseStudyEvidence, don't drop it.** Each partial may include `## CaseStudyEvidence` with a yaml fence. Emit exactly one final CaseStudyEvidence block:
+   - volume.sessions / user_turns / decisions: sum
+   - corrections: union by exact quote; volume.corrections = len(corrections)
+   - instruction_deltas: union by case-folded summary
+   - outcomes: union by unit; on conflict keep worse result (abandoned > deferred > hardening > rework > first_pass > autonomous_success > unknown)
+   - agents_used: sum sessions/tokens/cost by (tool, model)
+   - process_invocations / open_threads / projects: set union
+   - case_study_quotes: union then cap at 10 (prefer correction quotes)
+   - metrics_ref: keep first non-null
+   - period: the day; period_kind: day
+   - Never invent cost or agents not present in partials
 
 ## Output Format
 
@@ -47,6 +58,12 @@ Bullet list of raw observations (not interpretations).
 ### Suggested Rules
 
 If no lessons are apparent for a subsection, omit that subsection.
+
+## CaseStudyEvidence
+
+```yaml
+# required merged block — see docs/case-study-evidence.md
+```
 
 ## Input
 

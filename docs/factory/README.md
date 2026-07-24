@@ -14,13 +14,15 @@ process case studies (CTO / fractional CTO materials).
 | Phase | Delivery spec | Status |
 | --- | --- | --- |
 | A | [phase-A-baseline-delivery.md](phase-A-baseline-delivery.md) | done |
-| B | [phase-B-case-study-evidence-schema-delivery.md](phase-B-case-study-evidence-schema-delivery.md) | **next** |
-| C | [phase-C-daily-contract-delivery.md](phase-C-daily-contract-delivery.md) | pending |
-| D | [phase-D-session-metrics-rails-delivery.md](phase-D-session-metrics-rails-delivery.md) | pending |
-| E | [phase-E-weekly-compaction-delivery.md](phase-E-weekly-compaction-delivery.md) | pending |
-| F | [phase-F-monthly-via-weeklies-delivery.md](phase-F-monthly-via-weeklies-delivery.md) | pending |
-| G | [phase-G-loss-audit-delivery.md](phase-G-loss-audit-delivery.md) | pending |
-| H | [phase-H-model-routing-harness-delivery.md](phase-H-model-routing-harness-delivery.md) | pending |
+| B | [phase-B-case-study-evidence-schema-delivery.md](phase-B-case-study-evidence-schema-delivery.md) | done |
+| C | [phase-C-daily-contract-delivery.md](phase-C-daily-contract-delivery.md) | done |
+| D | [phase-D-session-metrics-rails-delivery.md](phase-D-session-metrics-rails-delivery.md) | done |
+| E | [phase-E-weekly-compaction-delivery.md](phase-E-weekly-compaction-delivery.md) | done |
+| F | [phase-F-monthly-via-weeklies-delivery.md](phase-F-monthly-via-weeklies-delivery.md) | done |
+| G | [phase-G-loss-audit-delivery.md](phase-G-loss-audit-delivery.md) | done |
+| H | [phase-H-model-routing-harness-delivery.md](phase-H-model-routing-harness-delivery.md) | done |
+
+See also: [case-study-evidence.md](../case-study-evidence.md), [loss-audit-protocol.md](loss-audit-protocol.md).
 
 ## Dependency Graph
 
