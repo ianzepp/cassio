@@ -411,8 +411,8 @@ pub fn derive_output_path(tool: Tool, path: &Path) -> (String, String) {
 /// Derive output path for a Claude Chat virtual path by reading the conversation
 /// `created_at` from the privacy export.
 fn derive_claude_chat_output_path(path: &Path) -> (String, String) {
-    use crate::parser::claude_chat::ClaudeChatParser;
     use crate::parser::Parser;
+    use crate::parser::claude_chat::ClaudeChatParser;
 
     if let Ok(parsed) = ClaudeChatParser.parse_export(path) {
         let dt = parsed.session.metadata.started_at;

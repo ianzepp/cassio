@@ -252,6 +252,23 @@ fn parse_lines<I: Iterator<Item = String>>(
         }
     }
 
+    // Grok records token usage in sibling files rather than in
+    // chat_history.jsonl itself: per-turn usage in `updates.jsonl`
+    // (`turn_completed` records) and session context-window numbers in
+    // `signals.json`. Add them to the stats when present.
+    if source_path != "stdin" {
+        let chat_path = Path::new(&source_path);
+        if let Some(usage) = grok_usage_from_updates(chat_path) {
+            stats.total_tokens.input_tokens += usage.input_tokens;
+            stats.total_tokens.output_tokens += usage.output_tokens;
+            stats.total_tokens.cache_read_tokens += usage.cache_read_tokens;
+            stats.total_tokens.cache_creation_tokens += usage.cache_creation_tokens;
+        }
+        let (context_used, context_window) = grok_context_from_signals(chat_path);
+        stats.context_tokens_used = context_used;
+        stats.context_window_tokens = context_window;
+    }
+
     let mut meta =
         metadata.ok_or_else(|| CassioError::Other("No Grok session metadata found".into()))?;
     meta.session_kind = classify_session_kind(&messages);
@@ -334,6 +351,90 @@ pub(crate) fn grok_started_at_from_source(path: &Path) -> Option<DateTime<Utc>> 
     grok_session_id_from_source(path)
         .as_deref()
         .and_then(uuid_v7_timestamp)
+}
+
+/// Per-turn token usage from the sibling `updates.jsonl`, summed across the
+/// session's `turn_completed` records. Returns `None` when the file is absent
+/// or carries no usage data, leaving totals at zero.
+///
+/// Grok's accounting is OpenAI-style: `inputTokens` includes `cachedReadTokens`
+/// (the full context is re-sent each model call, with part served from cache),
+/// whereas the AST's `TokenUsage.input_tokens` means fresh input only (Claude
+/// semantics, so summary tables compare apples to apples). The record's own
+/// `totalTokens` disambiguates the schema: when `inputTokens + outputTokens ==
+/// totalTokens` the cached reads are already inside `inputTokens` and we
+/// subtract them; when `totalTokens` also counts `cachedReadTokens` on top,
+/// `inputTokens` is kept as reported.
+fn grok_usage_from_updates(chat_history_path: &Path) -> Option<TokenUsage> {
+    let updates_path = chat_history_path.parent()?.join("updates.jsonl");
+    let file = std::fs::File::open(updates_path).ok()?;
+    let reader = std::io::BufReader::new(file);
+    let mut usage = TokenUsage::default();
+    let mut found = false;
+    for line in reader.lines() {
+        let Ok(line) = line else {
+            break;
+        };
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(record) = serde_json::from_str::<Value>(trimmed) else {
+            continue;
+        };
+        let Some(update) = record.get("params").and_then(|params| params.get("update")) else {
+            continue;
+        };
+        if update.get("sessionUpdate").and_then(|v| v.as_str()) != Some("turn_completed") {
+            continue;
+        }
+        let Some(u) = update.get("usage") else {
+            continue;
+        };
+        let input = u.get("inputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let output = u.get("outputTokens").and_then(|v| v.as_u64()).unwrap_or(0);
+        let cached_read = u
+            .get("cachedReadTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let cached_write = u
+            .get("cacheCreationTokens")
+            .and_then(|v| v.as_u64())
+            .unwrap_or(0);
+        let total = u.get("totalTokens").and_then(|v| v.as_u64());
+        let cached_included = total.is_some_and(|t| input.saturating_add(output) == t);
+        usage.input_tokens += if cached_included {
+            input.saturating_sub(cached_read)
+        } else {
+            input
+        };
+        usage.output_tokens += output;
+        usage.cache_read_tokens += cached_read;
+        usage.cache_creation_tokens += cached_write;
+        found = true;
+    }
+    found.then_some(usage)
+}
+
+/// Session context-window numbers from the sibling `signals.json`
+/// (`contextTokensUsed` / `contextWindowTokens`). Returns `(None, None)` when
+/// the file is absent or unparseable.
+fn grok_context_from_signals(chat_history_path: &Path) -> (Option<u64>, Option<u64>) {
+    let Some(signals_path) = chat_history_path
+        .parent()
+        .map(|parent| parent.join("signals.json"))
+    else {
+        return (None, None);
+    };
+    let Ok(content) = std::fs::read_to_string(signals_path) else {
+        return (None, None);
+    };
+    let Ok(record) = serde_json::from_str::<Value>(&content) else {
+        return (None, None);
+    };
+    let used = record.get("contextTokensUsed").and_then(|v| v.as_u64());
+    let window = record.get("contextWindowTokens").and_then(|v| v.as_u64());
+    (used, window)
 }
 
 fn load_metadata_from_source(

@@ -12,8 +12,6 @@ use walkdir::WalkDir;
 use crate::error::CassioError;
 use crate::pricing;
 
-
-
 /// Stats parsed from a single session transcript file.
 #[derive(Default)]
 struct TranscriptStats {

@@ -134,10 +134,7 @@ pub fn parse_yaml(yaml: &str) -> Result<CaseStudyEvidence, CassioError> {
 pub fn to_markdown_section(evidence: &CaseStudyEvidence) -> Result<String, CassioError> {
     let yaml = serde_yaml::to_string(evidence)
         .map_err(|e| CassioError::Other(format!("CaseStudyEvidence YAML emit failed: {e}")))?;
-    Ok(format!(
-        "## CaseStudyEvidence\n\n```yaml\n{}```\n",
-        yaml
-    ))
+    Ok(format!("## CaseStudyEvidence\n\n```yaml\n{}```\n", yaml))
 }
 
 /// Soft validation warnings (empty if OK).
@@ -272,10 +269,7 @@ pub fn merge_evidence(
             }
         }
         for a in &part.agents_used {
-            let key = (
-                a.tool.clone(),
-                a.model.clone().unwrap_or_default(),
-            );
+            let key = (a.tool.clone(), a.model.clone().unwrap_or_default());
             let entry = agents.entry(key).or_insert_with(|| AgentUse {
                 tool: a.tool.clone(),
                 model: a.model.clone(),

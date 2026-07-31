@@ -277,9 +277,7 @@ pub fn run_dailies(
     let total = to_process.len();
 
     if options.dry_run {
-        eprintln!(
-            "dry-run: would compact {total} day(s) (no LLM calls, no writes)"
-        );
+        eprintln!("dry-run: would compact {total} day(s) (no LLM calls, no writes)");
         for (i, (day, files)) in to_process.iter().enumerate() {
             let month = day.get(..7).unwrap_or("unknown");
             let relative = format!("{month}/{day}");
@@ -643,9 +641,7 @@ pub fn run_weeklies(
     let total = to_process.len();
 
     if options.dry_run {
-        eprintln!(
-            "dry-run: would compact {total} week(s) (no LLM calls, no writes)"
-        );
+        eprintln!("dry-run: would compact {total} week(s) (no LLM calls, no writes)");
         for (i, (week_id, files)) in to_process.iter().enumerate() {
             let out_display = match crate::metrics::iso_week_monday_public(week_id) {
                 Ok(monday) => {
@@ -680,13 +676,7 @@ pub fn run_weeklies(
     for (i, (week_id, files)) in to_process.iter().enumerate() {
         eprint!("weeklies: [{} of {total}] {week_id}...", i + 1);
         match compact_week(
-            output_dir,
-            week_id,
-            files,
-            model,
-            provider,
-            base_url,
-            options,
+            output_dir, week_id, files, model, provider, base_url, options,
         ) {
             Ok(()) => {
                 eprintln!(" ok");
@@ -1388,7 +1378,11 @@ fn weekly_summary_exists(output_dir: &Path, week_id: &str) -> bool {
         }
     }
     // Fallback: scan
-    for entry in WalkDir::new(output_dir).max_depth(2).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(output_dir)
+        .max_depth(2)
+        .into_iter()
+        .filter_map(|e| e.ok())
+    {
         if entry.file_name().to_string_lossy() == format!("{week_id}.weekly.md") {
             return true;
         }
@@ -1447,7 +1441,11 @@ fn compact_week(
         };
         invoke_llm(&input, model, provider, base_url, options, context).map_err(|err| {
             DayFailure {
-                detail: format!("{week_id}: weekly failed [{}] {}", err.class.as_str(), err.detail),
+                detail: format!(
+                    "{week_id}: weekly failed [{}] {}",
+                    err.class.as_str(),
+                    err.detail
+                ),
             }
         })?
     } else {
@@ -1463,16 +1461,17 @@ fn compact_week(
                 chunk_index: Some(i + 1),
                 total_chunks: chunks.len(),
             };
-            let out = invoke_llm(&input, model, provider, base_url, options, context).map_err(
-                |err| DayFailure {
-                    detail: format!(
-                        "{week_id}: weekly chunk {} failed [{}] {}",
-                        i + 1,
-                        err.class.as_str(),
-                        err.detail
-                    ),
-                },
-            )?;
+            let out =
+                invoke_llm(&input, model, provider, base_url, options, context).map_err(|err| {
+                    DayFailure {
+                        detail: format!(
+                            "{week_id}: weekly chunk {} failed [{}] {}",
+                            i + 1,
+                            err.class.as_str(),
+                            err.detail
+                        ),
+                    }
+                })?;
             chunk_summaries.push((format!("week-chunk-{}", i + 1), out));
         }
         eprint!(" merging...");

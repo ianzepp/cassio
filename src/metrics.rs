@@ -13,8 +13,6 @@ use walkdir::WalkDir;
 use crate::error::CassioError;
 use crate::pricing;
 
-
-
 #[derive(Debug, Clone, Serialize)]
 pub struct DayMetrics {
     pub period: String,
@@ -72,7 +70,11 @@ struct SessionRow {
 }
 
 /// Write day metrics JSON under `output_dir/YYYY-MM/YYYY-MM-DD.metrics.json`.
-pub fn write_day_metrics(input_dir: &Path, output_dir: &Path, day: &str) -> Result<PathBuf, CassioError> {
+pub fn write_day_metrics(
+    input_dir: &Path,
+    output_dir: &Path,
+    day: &str,
+) -> Result<PathBuf, CassioError> {
     let metrics = collect_day_metrics(input_dir, day)?;
     let month = day.get(..7).unwrap_or("unknown");
     let out_dir = output_dir.join(month);
@@ -437,15 +439,18 @@ fn iso_week_monday(iso_week: &str) -> Result<NaiveDate, CassioError> {
     let week: u32 = parts[1][1..]
         .parse()
         .map_err(|_| CassioError::Other(format!("Invalid ISO week number: {iso_week}")))?;
-    NaiveDate::from_isoywd_opt(year, week, chrono::Weekday::Mon).ok_or_else(|| {
-        CassioError::Other(format!("Invalid ISO week calendar: {iso_week}"))
-    })
+    NaiveDate::from_isoywd_opt(year, week, chrono::Weekday::Mon)
+        .ok_or_else(|| CassioError::Other(format!("Invalid ISO week calendar: {iso_week}")))
 }
 
 fn iso_week_days(iso_week: &str) -> Result<Vec<String>, CassioError> {
     let monday = iso_week_monday(iso_week)?;
     Ok((0..7)
-        .map(|i| (monday + chrono::Duration::days(i)).format("%Y-%m-%d").to_string())
+        .map(|i| {
+            (monday + chrono::Duration::days(i))
+                .format("%Y-%m-%d")
+                .to_string()
+        })
         .collect())
 }
 

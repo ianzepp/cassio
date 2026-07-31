@@ -95,12 +95,11 @@ fn test_parse_conversation_basic() {
     assert_eq!(session.metadata.project_path, "claude-chat");
     assert_eq!(session.stats.user_messages, 1);
     assert_eq!(session.stats.assistant_messages, 1);
-    assert!(
-        session
-            .messages
+    assert!(session.messages.iter().any(|m| {
+        m.content
             .iter()
-            .any(|m| m.content.iter().any(|b| matches!(b, ContentBlock::Thinking { .. })))
-    );
+            .any(|b| matches!(b, ContentBlock::Thinking { .. }))
+    }));
     assert_eq!(parsed.training.source.tool, "claude-chat");
     assert_eq!(
         parsed.training.source.source_format.as_deref(),
@@ -203,7 +202,11 @@ fn test_discover_and_parse_from_zip() {
 fn test_discover_from_directory() {
     let dir = temp_path("dir");
     fs::create_dir_all(&dir).unwrap();
-    fs::write(dir.join("conversations.json"), sample_conversations().to_string()).unwrap();
+    fs::write(
+        dir.join("conversations.json"),
+        sample_conversations().to_string(),
+    )
+    .unwrap();
 
     let files = discover_export_sessions(&dir).unwrap();
     assert_eq!(files.len(), 2);

@@ -259,6 +259,19 @@ fn format_summary(
         writeln!(w, "{EMOJI_META} Tokens: {}", token_parts.join(", "))?;
     }
 
+    // Context window utilization (Grok records this in signals.json)
+    if let (Some(used), Some(window)) = (stats.context_tokens_used, stats.context_window_tokens)
+        && window > 0
+    {
+        let pct = (used as f64 * 100.0 / window as f64).round() as u64;
+        writeln!(
+            w,
+            "{EMOJI_META} Context: {} / {} ({pct}%)",
+            format_tokens(used),
+            format_tokens(window)
+        )?;
+    }
+
     // Cost (OpenCode)
     if let Some(cost) = stats.cost
         && cost > 0.0

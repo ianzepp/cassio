@@ -152,6 +152,7 @@ fn make_test_session() -> Session {
             files_edited: HashSet::new(),
             duration_seconds: Some(120),
             cost: None,
+            ..Default::default()
         },
     }
 }
@@ -275,4 +276,35 @@ fn test_format_empty_stats_no_summary() {
     EmojiTextFormatter.format(&session, &mut buf).unwrap();
     let output = String::from_utf8(buf).unwrap();
     assert!(!output.contains("Summary"));
+}
+
+#[test]
+fn test_format_context_line() {
+    let session = parsed_from_session(Session {
+        metadata: SessionMetadata {
+            session_id: "s1".to_string(),
+            tool: Tool::Grok,
+            project_path: "/proj".to_string(),
+            started_at: Utc::now(),
+            session_kind: SessionKind::Human,
+            version: None,
+            git_branch: None,
+            model: None,
+            title: None,
+        },
+        messages: vec![],
+        stats: SessionStats {
+            user_messages: 1,
+            context_tokens_used: Some(43343),
+            context_window_tokens: Some(1048576),
+            ..Default::default()
+        },
+    });
+    let mut buf = Vec::new();
+    EmojiTextFormatter.format(&session, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    assert!(
+        output.contains("Context: 43.3K / 1.0M (4%)"),
+        "output: {output}"
+    );
 }

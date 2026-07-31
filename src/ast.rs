@@ -274,6 +274,13 @@ pub struct SessionStats {
     pub tool_calls: u32,
     pub tool_errors: u32,
     pub total_tokens: TokenUsage,
+    /// Context window utilization recorded by the tool's own session telemetry
+    /// (Grok's `signals.json`): tokens used vs. window size. `None` when the
+    /// source does not record context numbers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_tokens_used: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub context_window_tokens: Option<u64>,
     pub files_read: HashSet<String>,
     pub files_written: HashSet<String>,
     pub files_edited: HashSet<String>,

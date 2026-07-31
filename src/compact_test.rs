@@ -244,11 +244,7 @@ fn test_run_dailies_dry_run_no_writes_no_llm() {
     std::fs::create_dir_all(&output).unwrap();
 
     let session = input.join("2026-06-11T10-00-00-codex.md");
-    std::fs::write(
-        &session,
-        "📋 Session: test\n👤 Hello world\n🤖 Hi there\n",
-    )
-    .unwrap();
+    std::fs::write(&session, "📋 Session: test\n👤 Hello world\n🤖 Hi there\n").unwrap();
 
     let options = CompactOptions::new(30, 1, DEFAULT_MAX_INPUT_BYTES).with_dry_run(true);
     let report = run_dailies(

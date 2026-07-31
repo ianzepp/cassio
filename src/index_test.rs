@@ -136,13 +136,18 @@ fn file_selection_uses_separate_training_root() {
     };
     let files = files_to_index(&root, &options);
     assert_eq!(files.len(), 2);
-    assert!(files.iter().any(|p| p.ends_with("2026-04-30T10-00-00-codex.md")));
+    assert!(
+        files
+            .iter()
+            .any(|p| p.ends_with("2026-04-30T10-00-00-codex.md"))
+    );
     assert!(files.iter().any(|p| p.starts_with(&training)));
-    assert!(!files.iter().any(|p| p.starts_with(&root)
-        && p
-            .file_name()
-            .and_then(|n| n.to_str())
-            .is_some_and(|n| n.ends_with(".training.json"))));
+    assert!(!files.iter().any(|p| {
+        p.starts_with(&root)
+            && p.file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.ends_with(".training.json"))
+    }));
 
     fs::remove_dir_all(&root).ok();
     fs::remove_dir_all(&training).ok();

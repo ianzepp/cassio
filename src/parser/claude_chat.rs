@@ -305,7 +305,10 @@ fn read_conversations_from_zip(path: &Path) -> Result<Vec<u8>, CassioError> {
     let mut candidate_index: Option<usize> = None;
     for i in 0..archive.len() {
         let entry = archive.by_index(i).map_err(|e| {
-            CassioError::Other(format!("Failed to read zip entry in {}: {e}", path.display()))
+            CassioError::Other(format!(
+                "Failed to read zip entry in {}: {e}",
+                path.display()
+            ))
         })?;
         let name = entry.name().replace('\\', "/");
         if name == "conversations.json" || name.ends_with("/conversations.json") {
@@ -317,10 +320,7 @@ fn read_conversations_from_zip(path: &Path) -> Result<Vec<u8>, CassioError> {
     }
 
     let index = candidate_index.ok_or_else(|| {
-        CassioError::Other(format!(
-            "Zip has no conversations.json: {}",
-            path.display()
-        ))
+        CassioError::Other(format!("Zip has no conversations.json: {}", path.display()))
     })?;
 
     let mut entry = archive.by_index(index).map_err(|e| {
@@ -561,13 +561,7 @@ fn append_content_blocks(
                         }
                         blocks.push(ContentBlock::Text { text: text.clone() });
                         *sequence += 1;
-                        training_events.push(message_event(
-                            *sequence,
-                            ts,
-                            role,
-                            text,
-                            source_ref,
-                        ));
+                        training_events.push(message_event(*sequence, ts, role, text, source_ref));
                     }
                     "thinking" => {
                         let text = block
@@ -658,18 +652,16 @@ fn append_content_blocks(
                         }
 
                         let (name, input) = if let Some(ref id) = tool_use_id {
-                            pending_tools
-                                .remove(id)
-                                .unwrap_or_else(|| {
-                                    (
-                                        block
-                                            .get("name")
-                                            .and_then(|n| n.as_str())
-                                            .unwrap_or("unknown")
-                                            .to_string(),
-                                        Value::Null,
-                                    )
-                                })
+                            pending_tools.remove(id).unwrap_or_else(|| {
+                                (
+                                    block
+                                        .get("name")
+                                        .and_then(|n| n.as_str())
+                                        .unwrap_or("unknown")
+                                        .to_string(),
+                                    Value::Null,
+                                )
+                            })
                         } else {
                             (
                                 block
@@ -725,9 +717,7 @@ fn append_content_blocks(
             }
         }
         Value::String(text) if !text.is_empty() => {
-            blocks.push(ContentBlock::Text {
-                text: text.clone(),
-            });
+            blocks.push(ContentBlock::Text { text: text.clone() });
             *sequence += 1;
             training_events.push(message_event(*sequence, ts, role, text.clone(), source_ref));
         }
@@ -854,8 +844,8 @@ fn parse_timestamp(s: &str) -> Option<DateTime<Utc>> {
 pub fn write_test_zip(path: &Path, conversations_json: &[u8]) -> Result<(), CassioError> {
     let file = fs::File::create(path)?;
     let mut zip = zip::ZipWriter::new(file);
-    let options = zip::write::SimpleFileOptions::default()
-        .compression_method(zip::CompressionMethod::Stored);
+    let options =
+        zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
     zip.start_file("conversations.json", options)
         .map_err(|e| CassioError::Other(format!("zip start_file: {e}")))?;
     zip.write_all(conversations_json)

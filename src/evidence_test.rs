@@ -83,9 +83,6 @@ fn validate_warns_on_count_mismatch() {
 
 #[test]
 fn missing_quotes_reports_absent() {
-    let missing = missing_quotes(
-        &["a".into(), "b".into()],
-        &["a".into()],
-    );
+    let missing = missing_quotes(&["a".into(), "b".into()], &["a".into()]);
     assert_eq!(missing, vec!["b".to_string()]);
 }

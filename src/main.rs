@@ -886,16 +886,16 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 AuditAction::Loss { expected, actual } => {
                     let exp_md = fs::read_to_string(&expected)?;
                     let act_md = fs::read_to_string(&actual)?;
-                    let exp = cassio::evidence::parse_from_markdown(&exp_md)?
-                        .ok_or_else(|| {
-                            CassioError::Other("expected file has no CaseStudyEvidence".into())
-                        })?;
-                    let act = cassio::evidence::parse_from_markdown(&act_md)?
-                        .ok_or_else(|| {
-                            CassioError::Other("actual file has no CaseStudyEvidence".into())
-                        })?;
-                    let missing_q =
-                        cassio::evidence::missing_quotes(&exp.case_study_quotes, &act.case_study_quotes);
+                    let exp = cassio::evidence::parse_from_markdown(&exp_md)?.ok_or_else(|| {
+                        CassioError::Other("expected file has no CaseStudyEvidence".into())
+                    })?;
+                    let act = cassio::evidence::parse_from_markdown(&act_md)?.ok_or_else(|| {
+                        CassioError::Other("actual file has no CaseStudyEvidence".into())
+                    })?;
+                    let missing_q = cassio::evidence::missing_quotes(
+                        &exp.case_study_quotes,
+                        &act.case_study_quotes,
+                    );
                     let missing_d = cassio::evidence::missing_instruction_summaries(
                         &exp.instruction_deltas,
                         &act.instruction_deltas,
@@ -1367,10 +1367,7 @@ fn run_claude_chat_mode(
         maybe_auto_index(output_dir, config, cli.dry_run)?;
         cassio::git::auto_commit_and_push(
             output_dir,
-            &format!(
-                "cassio --claude-chat ({})",
-                Local::now().format("%Y-%m-%d")
-            ),
+            &format!("cassio --claude-chat ({})", Local::now().format("%Y-%m-%d")),
             &config.git,
         )?;
     }
