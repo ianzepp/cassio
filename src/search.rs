@@ -431,13 +431,19 @@ fn validate_options(options: &SearchOptions) -> Result<(), CassioError> {
 }
 
 fn artifact_order(options: &SearchOptions) -> Vec<SearchArtifact> {
-    let mut order = vec![SearchArtifact::Monthly, SearchArtifact::Daily];
-    if !options.summaries_only {
-        order.push(SearchArtifact::Session);
-        if options.include_training {
-            order.push(SearchArtifact::Training);
-        }
+    if options.summaries_only {
+        // Explicit distilled view: summaries only, no raw sessions.
+        return vec![SearchArtifact::Monthly, SearchArtifact::Daily];
     }
+    // Default is raw text first: sessions hold what the user actually said, and
+    // the increasingly distilled summaries (dailies, then monthlies) act as the
+    // fallback once session hits are exhausted.
+    let mut order = vec![SearchArtifact::Session];
+    if options.include_training {
+        order.push(SearchArtifact::Training);
+    }
+    order.push(SearchArtifact::Daily);
+    order.push(SearchArtifact::Monthly);
     order
 }
 

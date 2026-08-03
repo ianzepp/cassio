@@ -213,3 +213,33 @@ fn test_aggregate_add_agg() {
     assert_eq!(a.kind_breakdown(), "1/1/1");
     assert_eq!(a.user_msgs, 15);
 }
+
+// --- newest_first ordering tests ---
+
+#[test]
+fn test_newest_first_orders_months_descending() {
+    let mut months = BTreeSet::new();
+    months.insert("2026-03".to_string());
+    months.insert("2026-07".to_string());
+    months.insert("2026-01".to_string());
+    assert_eq!(newest_first(months), vec!["2026-07", "2026-03", "2026-01"]);
+}
+
+#[test]
+fn test_newest_first_orders_days_descending() {
+    let mut days = BTreeSet::new();
+    days.insert("2026-07-31".to_string());
+    days.insert("2026-07-01".to_string());
+    days.insert("2026-06-15".to_string());
+    assert_eq!(
+        newest_first(days),
+        vec!["2026-07-31", "2026-07-01", "2026-06-15"]
+    );
+}
+
+#[test]
+fn test_newest_first_single_key() {
+    let mut keys = BTreeSet::new();
+    keys.insert("2026-04".to_string());
+    assert_eq!(newest_first(keys), vec!["2026-04"]);
+}

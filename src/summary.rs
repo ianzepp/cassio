@@ -301,7 +301,8 @@ fn print_regular(stats: &[TranscriptStats]) {
     for key in by_month_tool.keys() {
         months.insert(key.0.clone());
     }
-    let months: Vec<String> = months.into_iter().collect();
+    // Newest month first — the table leads with recent activity.
+    let months = newest_first(months);
 
     // Header
     print!("| Month |");
@@ -393,7 +394,10 @@ fn print_daily(stats: &[TranscriptStats]) {
 
     let mut total = Aggregate::default();
 
-    for (date, agg) in &by_date {
+    // Newest day first.
+    let days = newest_first(by_date.keys().cloned().collect());
+    for date in &days {
+        let agg = &by_date[date];
         println!(
             "| {} | {} | {} | {}/{} | {} | {} |",
             date,
@@ -471,6 +475,14 @@ fn print_detailed(stats: &[TranscriptStats]) {
         pricing::format_cost(total.cost),
         format_duration(total.duration_secs),
     );
+}
+
+/// Newest-first order for `YYYY-MM` or `YYYY-MM-DD` keys.
+///
+/// String sort on these keys is chronological, so reversing the ascending set
+/// yields recent-first — the order a human wants in summary tables.
+fn newest_first(keys: BTreeSet<String>) -> Vec<String> {
+    keys.into_iter().rev().collect()
 }
 
 /// Shorten a project path: keep last 3 components (or fewer).

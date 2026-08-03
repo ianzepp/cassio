@@ -116,6 +116,35 @@ fn artifact_detection_prioritizes_summaries() {
 }
 
 #[test]
+fn artifact_order_is_raw_text_first_by_default() {
+    let mut options = test_options();
+    assert_eq!(
+        artifact_order(&options),
+        vec![
+            SearchArtifact::Session,
+            SearchArtifact::Daily,
+            SearchArtifact::Monthly,
+        ]
+    );
+    options.include_training = true;
+    assert_eq!(
+        artifact_order(&options),
+        vec![
+            SearchArtifact::Session,
+            SearchArtifact::Training,
+            SearchArtifact::Daily,
+            SearchArtifact::Monthly,
+        ]
+    );
+    // --summaries-only keeps the distilled view.
+    options.summaries_only = true;
+    assert_eq!(
+        artifact_order(&options),
+        vec![SearchArtifact::Monthly, SearchArtifact::Daily]
+    );
+}
+
+#[test]
 fn root_prompts_are_not_session_markdown() {
     assert!(!is_session_markdown_name("compact-prompt.md"));
     assert!(!is_session_markdown_name("monthly-prompt.md"));

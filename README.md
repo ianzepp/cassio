@@ -504,18 +504,21 @@ Options:
 ```
 
 Regular mode shows a month × tool session count table with transcript-kind,
-token, cost, and duration totals. `--detailed` shows a per-project breakdown
-with transcript-kind, message counts, tool usage, and token spend. `--daily`
-shows the same transcript-kind, token, cost, and duration totals grouped by day.
+token, cost, and duration totals, **newest month first**. `--detailed` shows a
+per-project breakdown with transcript-kind, message counts, tool usage, and
+token spend. `--daily` shows the same transcript-kind, token, cost, and
+duration totals grouped by day, **newest day first**.
 
 ## Search
 
 Use Cassio search when plain `grep` or `rg` is too unstructured. It searches
-Cassio's generated artifacts in retrieval order: monthly summaries, daily
-compactions, session transcripts, and optionally training JSON metadata.
-Results are **newest-first** by default, so an unconstrained search surfaces
-recent material instead of the oldest months in the archive; pass
-`--oldest-first` to reverse.
+Cassio's generated artifacts **raw text first**: session transcripts (what you
+actually said), then daily compactions, then monthly summaries — with optional
+training JSON metadata between sessions and summaries. Results are
+**newest-first** by default, so an unconstrained search surfaces recent
+material instead of the oldest months in the archive; pass `--oldest-first` to
+reverse. Use `--summaries-only` for the distilled monthly/daily view without
+sessions.
 
 ```sh
 cassio search "launchd rsync rollback" -o ~/transcripts
