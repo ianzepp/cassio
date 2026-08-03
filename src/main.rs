@@ -128,9 +128,27 @@ enum Command {
     Search {
         /// Search query. Literal terms are ANDed by default.
         query: String,
-        /// Restrict search to one YYYY-MM month directory
+        /// Restrict search to one YYYY-MM month directory (sugar for --from X --to X)
         #[arg(short, long)]
         month: Option<String>,
+        /// Earliest date to search (YYYY-MM or YYYY-MM-DD), inclusive
+        #[arg(long)]
+        from: Option<String>,
+        /// Latest date to search (YYYY-MM or YYYY-MM-DD), inclusive
+        #[arg(long)]
+        to: Option<String>,
+        /// Search only the last N days
+        #[arg(long)]
+        days: Option<u64>,
+        /// Restrict to sessions from one agent/tool (codex, grok, pi, claude, ...)
+        #[arg(long)]
+        tool: Option<String>,
+        /// Restrict to sessions whose project header contains SUBSTR
+        #[arg(long)]
+        project: Option<String>,
+        /// Match only lines spoken by one role in session transcripts
+        #[arg(long, value_parser = clap::value_parser!(cassio::search::Speaker))]
+        speaker: Option<cassio::search::Speaker>,
         /// Maximum number of matches to print
         #[arg(short, long, default_value_t = 50)]
         limit: usize,
@@ -164,6 +182,18 @@ enum Command {
         /// Semantic query embedding timeout, in seconds
         #[arg(long)]
         timeout: Option<u64>,
+        /// Show N lines of context around each match
+        #[arg(short = 'C', long, default_value_t = 0)]
+        context: usize,
+        /// List matching files only (ignores --context)
+        #[arg(long)]
+        files_with_matches: bool,
+        /// Print a per-file match count instead of matches
+        #[arg(long)]
+        count: bool,
+        /// Search oldest files first (default is newest first)
+        #[arg(long)]
+        oldest_first: bool,
         /// Emit JSON instead of text
         #[arg(long)]
         json: bool,
@@ -388,6 +418,12 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
         Some(Command::Search {
             query,
             month,
+            from,
+            to,
+            days,
+            tool,
+            project,
+            speaker,
             limit,
             summaries_only,
             include_training,
@@ -399,6 +435,10 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
             model,
             base_url,
             timeout,
+            context,
+            files_with_matches,
+            count,
+            oldest_first,
             json,
         }) => {
             let config = if cli.detached {
@@ -433,8 +473,23 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 .training_output
                 .clone()
                 .or_else(|| config.training_output_path());
+            // --month X is sugar for --from X --to X and wins over explicit
+            // bounds; --days is sugar for --from (today - N) and wins over both.
+            let from = match (&month, days) {
+                (Some(m), _) => Some(m.clone()),
+                (None, Some(days)) => Some(days_ago(days)?),
+                (None, None) => from,
+            };
+            let to = match &month {
+                Some(m) => Some(m.clone()),
+                None => to,
+            };
             let options = cassio::search::SearchOptions {
-                month,
+                from,
+                to,
+                tool,
+                project,
+                speaker,
                 limit,
                 summaries_only,
                 include_training,
@@ -442,6 +497,10 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
                 json,
                 regex,
                 case_sensitive,
+                context,
+                files_with_matches,
+                count,
+                oldest_first,
                 semantic: semantic_options,
                 training_root,
             };
@@ -996,6 +1055,15 @@ fn run(mut cli: Cli) -> Result<(), CassioError> {
         ))),
         None => run_stdin(format, cli.filter_dir.as_deref()),
     }
+}
+
+/// `YYYY-MM-DD` for `days` days before today (0 = today), used by `--days`.
+fn days_ago(days: u64) -> Result<String, CassioError> {
+    let today = chrono::Utc::now().date_naive();
+    let date = today
+        .checked_sub_days(chrono::Days::new(days))
+        .ok_or_else(|| CassioError::Other("--days is out of range".into()))?;
+    Ok(date.format("%Y-%m-%d").to_string())
 }
 
 #[allow(clippy::too_many_arguments)]

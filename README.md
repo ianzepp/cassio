@@ -513,14 +513,21 @@ shows the same transcript-kind, token, cost, and duration totals grouped by day.
 Use Cassio search when plain `grep` or `rg` is too unstructured. It searches
 Cassio's generated artifacts in retrieval order: monthly summaries, daily
 compactions, session transcripts, and optionally training JSON metadata.
+Results are **newest-first** by default, so an unconstrained search surfaces
+recent material instead of the oldest months in the archive; pass
+`--oldest-first` to reverse.
 
 ```sh
 cassio search "launchd rsync rollback" -o ~/transcripts
 cassio search "skill-author" --month 2026-04
+cassio search "zepp holdings" --speaker user
 cassio search "Permissions could not be resolved" --summaries-only
 cassio search "session_id|source_path" --regex --include-training --json
 cassio search "portfolio.service.ts" --include-paths
 cassio search "why did the branch keep snapping back?" --semantic
+cassio search "web-build-target" --tool codex --from 2026-06
+cassio search "faber" --project faber --context 2
+cassio search --count "skill-author"
 ```
 
 Literal queries are split on whitespace and ANDed on each line, so
@@ -531,31 +538,73 @@ for matching so terms from `/Users/...`, `/Volumes/...`, or tool path arguments
 do not drown out conversation hits. Use `--include-paths` when searching for
 file names or path text. The command uses config `output` when `-o` is omitted.
 
+### Narrowing where and when
+
+- **When**: `--from`/`--to` take `YYYY-MM` or `YYYY-MM-DD` (inclusive), and
+  `--days N` searches the last N days. `--month X` is sugar for
+  `--from X --to X` and wins over explicit bounds; `--days` wins over `--from`.
+  Month bounds apply to every artifact; day bounds additionally constrain
+  sessions and dailies by their date prefix.
+- **Where**: `--tool` restricts to sessions from one agent (`codex`, `grok`,
+  `pi`, `claude`, `claude-chat`, `opencode`, `cursor`, `kimi`, `hermes`),
+  matched on the transcript filename. `--project SUBSTR` restricts to sessions
+  whose `📋 Project:` header contains the substring (case-insensitive). Both
+  filters apply to session transcripts only — monthly/daily summaries aggregate
+  every tool and project, so they are skipped when these filters are set.
+- **What**: `--speaker user|assistant|tool` matches only lines inside that
+  role's blocks in session transcripts (`👤` / `🤖` / `✅❌` prefixes;
+  continuation lines of a message inherit its speaker). Searching with
+  `--speaker user` finds what you actually said, ignoring file contents the
+  model read and tool-call output. Note that injected system prompts appear as
+  `👤` user messages in some Grok sessions, so a user-speaker hit is not always
+  the human speaking.
+
+### Presentation
+
+- `--context N` shows N lines around each match (each context line is attached
+  once even when nearby matches overlap).
+- `--count` prints a per-file match count (and totals) instead of matches;
+  `--files-with-matches` lists matching files. Both scan every file and cap the
+  *file* list at `--limit`; `--context` is ignored in these modes, and the two
+  flags cannot be combined.
+
 Use `--semantic` after running `cassio index` to retrieve conceptually related
 chunks from the semantic index. Semantic search embeds the query with the
 configured `[embedding]` provider/model, or the semantic provider/model passed
-on the command line, and ranks indexed chunks by cosine similarity. It still
-honors `--month`, `--summaries-only`, `--include-training`, `--limit`, and
-`--json`.
+on the command line, and ranks indexed chunks by cosine similarity. It honors
+`--from`/`--to`, `--tool`, `--summaries-only`, `--include-training`,
+`--limit`, and `--json`. `--speaker` and `--project` cannot be combined with
+`--semantic` (index chunks carry neither speaker nor project), and
+`--speaker`/`--project`/`--tool` are rejected with `--summaries-only`.
 
 ```
 cassio search [OPTIONS] <QUERY>
 
 Options:
-  -m, --month <YYYY-MM>       Restrict search to one month directory
-  -l, --limit <N>             Maximum matches to print [default: 50]
-      --summaries-only        Search only monthly and daily summary files
-      --include-training      Include *.training.json after markdown hits
-      --include-paths         Let file paths and tool path arguments satisfy query terms
-      --regex                 Treat query as a regular expression
-      --case-sensitive        Use case-sensitive matching
-      --semantic              Use the semantic embedding index instead of lexical matching
-      --provider <PROVIDER>   Semantic embedding provider: builtin, ollama, openai, or lmstudio
-      --model <MODEL>         Semantic embedding model name
-      --base-url <URL>        Semantic embedding provider base URL
-      --timeout <SECONDS>     Semantic query embedding timeout, in seconds
-      --json                  Emit JSON instead of text
-  -o, --output <DIR>          Directory containing transcript files
+  -m, --month <YYYY-MM>           Restrict search to one month directory
+      --from <YYYY-MM|YYYY-MM-DD> Earliest date to search, inclusive
+      --to <YYYY-MM|YYYY-MM-DD>   Latest date to search, inclusive
+      --days <N>                  Search only the last N days
+      --tool <NAME>               Sessions from one agent only (codex, grok, pi, ...)
+      --project <SUBSTR>          Sessions whose project header contains SUBSTR
+      --speaker <ROLE>            Match only user, assistant, or tool lines
+  -l, --limit <N>                 Maximum matches to print [default: 50]
+  -C, --context <N>               Show N context lines around each match
+      --files-with-matches        List matching files only
+      --count                     Print a per-file match count instead of matches
+      --oldest-first              Search oldest files first (default: newest first)
+      --summaries-only            Search only monthly and daily summary files
+      --include-training          Include *.training.json after markdown hits
+      --include-paths             Let file paths and tool path arguments satisfy query terms
+      --regex                     Treat query as a regular expression
+      --case-sensitive            Use case-sensitive matching
+      --semantic                  Use the semantic embedding index instead of lexical matching
+      --provider <PROVIDER>       Semantic embedding provider: builtin, ollama, openai, or lmstudio
+      --model <MODEL>             Semantic embedding model name
+      --base-url <URL>            Semantic embedding provider base URL
+      --timeout <SECONDS>         Semantic query embedding timeout, in seconds
+      --json                      Emit JSON instead of text
+  -o, --output <DIR>              Directory containing transcript files
 ```
 
 ## Index

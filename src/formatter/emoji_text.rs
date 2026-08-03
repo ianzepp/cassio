@@ -39,12 +39,13 @@ use crate::error::CassioError;
 use crate::formatter::Formatter;
 use crate::training::ParsedSession;
 
-const EMOJI_META: &str = "\u{1f4cb}"; // 📋
-const EMOJI_USER: &str = "\u{1f464}"; // 👤
-const EMOJI_ASSISTANT: &str = "\u{1f916}"; // 🤖
-const EMOJI_SUCCESS: &str = "\u{2705}"; // ✅
-const EMOJI_FAILURE: &str = "\u{274c}"; // ❌
-const EMOJI_QUEUE: &str = "\u{23f3}"; // ⏳
+// `pub(crate)` so search can gate matches on the speaker prefix of a line.
+pub(crate) const EMOJI_META: &str = "\u{1f4cb}"; // 📋
+pub(crate) const EMOJI_USER: &str = "\u{1f464}"; // 👤
+pub(crate) const EMOJI_ASSISTANT: &str = "\u{1f916}"; // 🤖
+pub(crate) const EMOJI_SUCCESS: &str = "\u{2705}"; // ✅
+pub(crate) const EMOJI_FAILURE: &str = "\u{274c}"; // ❌
+pub(crate) const EMOJI_QUEUE: &str = "\u{23f3}"; // ⏳
 
 /// Formatter that produces emoji-prefixed plain text transcripts.
 pub struct EmojiTextFormatter;
