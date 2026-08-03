@@ -29,6 +29,7 @@
 //! prints them to stderr before exiting with code 1. This keeps error reporting
 //! consistent regardless of which path through `run()` failed.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
@@ -1477,6 +1478,44 @@ fn process_file_list(
     let mut up_to_date = 0u32;
     let training_dir = training_output.unwrap_or(output_dir);
 
+    // Disambiguate same-name output paths before writing. Several tools derive
+    // `YYYY-MM-DDTHH-MM-SS-{tool}.md` stems at second precision, so sessions
+    // that start in the same second (e.g. Grok spawning many sub-agents) would
+    // otherwise map to one file and silently overwrite each other. Within a
+    // (folder, stem) group, exactly one session keeps the canonical stem: the
+    // earliest one, determined by a stable sort of the source paths (Grok
+    // session directories are UUIDv7, so path order is chronological). The
+    // remaining sessions get a stable `-<hash8>` suffix derived from their own
+    // source paths. Keeping the first session's name stable means a --force
+    // regeneration never renames the original transcript in Git — it only adds
+    // new files for the extra sessions.
+    let mut stems: Vec<(String, String)> = Vec::with_capacity(files.len());
+    for (tool, path) in files {
+        stems.push(derive_output_stem_for(*tool, path)?);
+    }
+    let mut groups: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+    for (index, (folder, stem)) in stems.iter().enumerate() {
+        groups
+            .entry((folder.as_str(), stem.as_str()))
+            .or_default()
+            .push(index);
+    }
+    let mut unique_stems: Vec<(String, String)> = Vec::with_capacity(files.len());
+    for (index, (folder, stem)) in stems.iter().enumerate() {
+        let group = &groups[&(folder.as_str(), stem.as_str())];
+        let first = group
+            .iter()
+            .copied()
+            .min_by(|&a, &b| files[a].1.cmp(&files[b].1))
+            .unwrap_or(index);
+        if group.len() > 1 && index != first {
+            let hash = short_source_hash(&files[index].1);
+            unique_stems.push((folder.clone(), disambiguated_stem(stem, &hash)));
+        } else {
+            unique_stems.push((folder.clone(), stem.clone()));
+        }
+    }
+
     for (i, (tool, path)) in files.iter().enumerate() {
         if (i + 1) == 1 || (i + 1) % 100 == 0 {
             eprint!("\r  Processing {}/{}...", i + 1, total);
@@ -1491,16 +1530,16 @@ fn process_file_list(
             continue;
         }
 
-        let (folder, stem) = derive_output_stem_for(*tool, path)?;
+        let (folder, stem) = &unique_stems[i];
         let primary_root = match format {
             OutputFormat::TrainingJson => training_dir,
             _ => output_dir,
         };
         let out_path = primary_root
-            .join(&folder)
+            .join(folder)
             .join(output_filename(stem.as_str(), format));
         let training_path = training_dir
-            .join(&folder)
+            .join(folder)
             .join(format!("{stem}.training.json"));
 
         if !force {
@@ -1591,6 +1630,33 @@ fn process_file_list(
 /// OpenCode requires reading the session JSON to get a timestamp (since its session
 /// IDs are opaque), so this function handles that case directly. Other tools delegate
 /// to `discover::derive_output_path`.
+///
+/// First 8 hex chars of the SHA-256 of a source path — a stable,
+/// order-independent disambiguator for output-name collisions.
+fn short_source_hash(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(path.to_string_lossy().as_bytes());
+    let digest = hasher.finalize();
+    digest
+        .iter()
+        .take(4)
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+/// Insert a collision disambiguator before the trailing `-{tool}` suffix so the
+/// stem stays a recognizable session-transcript name — `summary` and compact
+/// discovery match on the tool suffix at the very end.
+fn disambiguated_stem(stem: &str, hash: &str) -> String {
+    if let Some(tool) = cassio::ast::session_tool_suffix(stem) {
+        let prefix = stem.strip_suffix(&format!("-{tool}")).unwrap_or(stem);
+        format!("{prefix}-{hash}-{tool}")
+    } else {
+        format!("{stem}-{hash}")
+    }
+}
+
 fn derive_output_stem_for(tool: Tool, path: &Path) -> Result<(String, String), CassioError> {
     match tool {
         Tool::OpenCode => {
