@@ -44,6 +44,81 @@ fn test_parse_minimal_grok_session() {
 }
 
 #[test]
+fn test_grok_records_actual_model_not_configured_slug() {
+    let chat = [
+        line(json!({
+            "type": "user",
+            "content": [{"type": "text", "text": "hello"}]
+        })),
+        line(json!({
+            "type": "assistant",
+            "content": "hi",
+            "model_id": "grok-4.6-build"
+        })),
+    ]
+    .join("\n");
+    let dir = temp_dir("actual-model");
+    fs::write(
+        dir.join("summary.json"),
+        r#"{"info":{"id":"sess-1","cwd":"/proj"},"created_at":"2026-09-01T12:00:00Z","current_model_id":"grok-4.6"}"#,
+    )
+    .unwrap();
+    fs::write(dir.join("chat_history.jsonl"), chat).unwrap();
+
+    let parsed = GrokParser
+        .parse_export(&dir.join("chat_history.jsonl"))
+        .unwrap();
+    assert_eq!(
+        parsed.session.metadata.model.as_deref(),
+        Some("grok-4.6-build")
+    );
+    assert_eq!(
+        parsed.training.metadata.models_seen,
+        vec!["grok-4.6-build".to_string()]
+    );
+}
+
+#[test]
+fn test_grok_collects_every_model_used_in_session() {
+    let chat = [
+        line(json!({
+            "type": "user",
+            "content": [{"type": "text", "text": "hello"}]
+        })),
+        line(json!({
+            "type": "assistant",
+            "content": "first",
+            "model_id": "glm-5.3"
+        })),
+        line(json!({
+            "type": "assistant",
+            "content": "second",
+            "model_id": "grok-4.6-build"
+        })),
+    ]
+    .join("\n");
+    let dir = temp_dir("multi-model");
+    fs::write(
+        dir.join("summary.json"),
+        r#"{"info":{"id":"sess-2","cwd":"/proj"},"created_at":"2026-09-01T12:00:00Z","current_model_id":"zai-glm-5.3"}"#,
+    )
+    .unwrap();
+    fs::write(dir.join("chat_history.jsonl"), chat).unwrap();
+
+    let parsed = GrokParser
+        .parse_export(&dir.join("chat_history.jsonl"))
+        .unwrap();
+    assert_eq!(
+        parsed.session.metadata.model.as_deref(),
+        Some("grok-4.6-build")
+    );
+    assert_eq!(
+        parsed.training.metadata.models_seen,
+        vec!["glm-5.3".to_string(), "grok-4.6-build".to_string()]
+    );
+}
+
+#[test]
 fn test_parse_grok_tool_call_and_result() {
     let lines = vec![
         line(json!({

@@ -177,6 +177,10 @@ fn test_full_format_output() {
     assert!(output.contains("Tool calls: 2 total, 0 failed"));
     assert!(output.contains("Tokens:"));
     assert!(output.contains("Files: 1 read"));
+    assert!(
+        !output.contains("Model:"),
+        "Claude reports model via ModelChange, not the summary block; output: {output}"
+    );
 }
 
 #[test]
@@ -305,6 +309,111 @@ fn test_format_context_line() {
     let output = String::from_utf8(buf).unwrap();
     assert!(
         output.contains("Context: 43.3K / 1.0M (4%)"),
+        "output: {output}"
+    );
+}
+
+#[test]
+fn test_model_report_line_joins_unique_models() {
+    assert_eq!(model_report_line(&[], None), None);
+    assert_eq!(
+        model_report_line(&[], Some("grok-4.6")),
+        Some("grok-4.6".to_string())
+    );
+    assert_eq!(
+        model_report_line(&["grok-4.6-build".to_string()], Some("grok-4.6")),
+        Some("grok-4.6-build".to_string())
+    );
+    assert_eq!(
+        model_report_line(
+            &["glm-5.3".to_string(), "grok-4.6-build".to_string()],
+            Some("zai-glm-5.3")
+        ),
+        Some("glm-5.3, grok-4.6-build".to_string())
+    );
+}
+
+#[test]
+fn test_format_grok_model_line_from_actual_slug() {
+    let mut session = parsed_from_session(Session {
+        metadata: SessionMetadata {
+            session_id: "s1".to_string(),
+            tool: Tool::Grok,
+            project_path: "/proj".to_string(),
+            started_at: Utc::now(),
+            session_kind: SessionKind::Human,
+            version: None,
+            git_branch: None,
+            model: Some("grok-4.6".to_string()),
+            title: None,
+        },
+        messages: vec![Message {
+            role: Role::Assistant,
+            timestamp: None,
+            model: Some("grok-4.6-build".to_string()),
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+            usage: None,
+        }],
+        stats: SessionStats {
+            user_messages: 1,
+            assistant_messages: 1,
+            ..Default::default()
+        },
+    });
+    session.training.metadata.models_seen = vec!["grok-4.6-build".to_string()];
+
+    let mut buf = Vec::new();
+    EmojiTextFormatter.format(&session, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    assert!(
+        output.contains("📋 Model: grok-4.6-build"),
+        "output: {output}"
+    );
+    assert!(
+        !output.contains("📋 Model: grok-4.6\n"),
+        "configured slug should not win over actual model_id; output: {output}"
+    );
+}
+
+#[test]
+fn test_format_joins_multiple_models_on_one_line() {
+    let mut session = parsed_from_session(Session {
+        metadata: SessionMetadata {
+            session_id: "s1".to_string(),
+            tool: Tool::Grok,
+            project_path: "/proj".to_string(),
+            started_at: Utc::now(),
+            session_kind: SessionKind::Human,
+            version: None,
+            git_branch: None,
+            model: Some("grok-4.6-build".to_string()),
+            title: None,
+        },
+        messages: vec![Message {
+            role: Role::Assistant,
+            timestamp: None,
+            model: Some("grok-4.6-build".to_string()),
+            content: vec![ContentBlock::Text {
+                text: "hi".to_string(),
+            }],
+            usage: None,
+        }],
+        stats: SessionStats {
+            user_messages: 1,
+            assistant_messages: 1,
+            ..Default::default()
+        },
+    });
+    session.training.metadata.models_seen =
+        vec!["glm-5.3".to_string(), "grok-4.6-build".to_string()];
+
+    let mut buf = Vec::new();
+    EmojiTextFormatter.format(&session, &mut buf).unwrap();
+    let output = String::from_utf8(buf).unwrap();
+    assert!(
+        output.contains("📋 Model: glm-5.3, grok-4.6-build"),
         "output: {output}"
     );
 }

@@ -67,7 +67,12 @@ impl Formatter for EmojiTextFormatter {
             format_message(msg, writer)?;
         }
 
-        format_summary(&session.stats, &session.metadata, writer)?;
+        format_summary(
+            &session.stats,
+            &session.metadata,
+            &parsed.training.metadata.models_seen,
+            writer,
+        )?;
 
         Ok(())
     }
@@ -183,6 +188,7 @@ fn format_message(msg: &Message, w: &mut dyn Write) -> Result<(), CassioError> {
 fn format_summary(
     stats: &SessionStats,
     metadata: &SessionMetadata,
+    models_seen: &[String],
     w: &mut dyn Write,
 ) -> Result<(), CassioError> {
     if stats.user_messages == 0 && stats.assistant_messages == 0 {
@@ -198,9 +204,11 @@ fn format_summary(
         writeln!(w, "{EMOJI_META} Duration: {duration}")?;
     }
 
-    // Model (for Codex where it's tracked differently)
-    if metadata.tool == Tool::Codex
-        && let Some(ref model) = metadata.model
+    // Grok and Codex report models here. Claude/Pi/OpenCode already emit
+    // ModelChange lines in the body; a summary line would overwrite those
+    // with a different slug shape. One slug, or comma-joined on a switch.
+    if matches!(metadata.tool, Tool::Grok | Tool::Codex)
+        && let Some(model) = model_report_line(models_seen, metadata.model.as_deref())
     {
         writeln!(w, "{EMOJI_META} Model: {model}")?;
     }
@@ -281,6 +289,18 @@ fn format_summary(
     }
 
     Ok(())
+}
+
+/// One `📋 Model:` value for the summary block.
+///
+/// Prefer the chronological unique list of models actually seen in the
+/// session. Fall back to the last/configured model when that list is empty.
+fn model_report_line(models_seen: &[String], fallback: Option<&str>) -> Option<String> {
+    if !models_seen.is_empty() {
+        Some(models_seen.join(", "))
+    } else {
+        fallback.map(str::to_string)
+    }
 }
 
 /// Abbreviate a Claude model identifier to a compact, readable name.

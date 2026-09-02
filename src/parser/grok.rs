@@ -269,6 +269,12 @@ fn parse_lines<I: Iterator<Item = String>>(
         stats.context_window_tokens = context_window;
     }
 
+    if models_seen.is_empty()
+        && let Some(model) = metadata.as_ref().and_then(|m| m.model.clone())
+    {
+        models_seen.push(model);
+    }
+
     let mut meta =
         metadata.ok_or_else(|| CassioError::Other("No Grok session metadata found".into()))?;
     meta.session_kind = classify_session_kind(&messages);
