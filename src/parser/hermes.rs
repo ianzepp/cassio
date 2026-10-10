@@ -55,6 +55,20 @@ fn split_state_db_virtual_path(path: &Path) -> Option<(PathBuf, String)> {
     ))
 }
 
+/// Real files whose modification time decides whether a `state.db/<id>` virtual
+/// session path is stale: the database plus its write-ahead log.
+///
+/// WHY: the virtual path itself never exists on disk, so a plain mtime check
+/// always reports "stale" and re-parses every DB session on every run. SQLite
+/// in WAL mode lands committed writes in `state.db-wal` first, leaving the main
+/// file's mtime behind, so both files have to be consulted.
+pub fn state_db_freshness_sources(path: &Path) -> Option<[PathBuf; 2]> {
+    let (db, _) = split_state_db_virtual_path(path)?;
+    let mut wal = db.clone().into_os_string();
+    wal.push("-wal");
+    Some([db, PathBuf::from(wal)])
+}
+
 #[derive(Debug)]
 struct RawHermesSession {
     source_path: String,

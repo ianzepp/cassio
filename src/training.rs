@@ -202,20 +202,64 @@ where
     set.into_iter().collect()
 }
 
+/// Incremental `source_hash` builder.
+///
+/// WHY: parsers used to collect every `(name, line.clone())` pair before hashing,
+/// which doubled the memory of every session file. Feeding chunks as they are
+/// read yields the identical digest without keeping them.
+pub struct SourceHasher {
+    hasher: Sha256,
+    name: String,
+}
+
+impl SourceHasher {
+    pub fn new() -> Self {
+        Self {
+            hasher: Sha256::new(),
+            name: String::new(),
+        }
+    }
+
+    pub fn chunk(&mut self, name: impl AsRef<[u8]>, body: impl AsRef<[u8]>) {
+        self.hasher.update(name.as_ref());
+        self.hasher.update([0]);
+        self.hasher.update(body.as_ref());
+        self.hasher.update([0xff]);
+    }
+
+    /// Hash one JSONL line under the `jsonl:<1-based line number>` chunk name.
+    pub fn jsonl_line(&mut self, line_number: usize, line: &str) {
+        use std::fmt::Write;
+        self.name.clear();
+        let _ = write!(self.name, "jsonl:{line_number}");
+        self.hasher.update(self.name.as_bytes());
+        self.hasher.update([0]);
+        self.hasher.update(line.as_bytes());
+        self.hasher.update([0xff]);
+    }
+
+    pub fn finish(self) -> String {
+        format!("sha256:{:x}", self.hasher.finalize())
+    }
+}
+
+impl Default for SourceHasher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub fn hash_named_chunks<I, A, B>(chunks: I) -> String
 where
     I: IntoIterator<Item = (A, B)>,
     A: AsRef<[u8]>,
     B: AsRef<[u8]>,
 {
-    let mut hasher = Sha256::new();
+    let mut hasher = SourceHasher::new();
     for (name, body) in chunks {
-        hasher.update(name.as_ref());
-        hasher.update([0]);
-        hasher.update(body.as_ref());
-        hasher.update([0xff]);
+        hasher.chunk(name, body);
     }
-    format!("sha256:{:x}", hasher.finalize())
+    hasher.finish()
 }
 
 fn push_unique(values: &mut Vec<String>, value: &str) {
@@ -223,3 +267,7 @@ fn push_unique(values: &mut Vec<String>, value: &str) {
         values.push(value.to_string());
     }
 }
+
+#[cfg(test)]
+#[path = "training_test.rs"]
+mod tests;

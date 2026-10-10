@@ -4,6 +4,7 @@
 //! JSON are written to disk. Redaction kinds are recorded in training metadata so
 //! exports remain auditable without leaking credentials.
 
+use std::borrow::Cow;
 use std::sync::OnceLock;
 
 use regex::{Captures, Regex};
@@ -27,10 +28,14 @@ impl RedactionAudit {
     }
 }
 
-pub fn redact_export(parsed: &ParsedSession) -> ParsedSession {
+/// Redact a parsed session and its training sidecar.
+///
+/// Takes ownership so the training events (raw tool inputs and outputs can be
+/// large) are rewritten in place rather than deep-cloned first.
+pub fn redact_export(parsed: ParsedSession) -> ParsedSession {
     let mut audit = RedactionAudit::default();
     let session = redact_session_with_audit(&parsed.session, &mut audit);
-    let mut training = parsed.training.clone();
+    let mut training = parsed.training;
 
     training.metadata.project_path_sanitized =
         redact_text_with_audit(&training.metadata.project_path_raw, &mut audit);
@@ -112,40 +117,56 @@ fn redact_optional(audit: &mut RedactionAudit, value: Option<&str>) -> Option<St
 }
 
 fn redact_text_with_audit(input: &str, audit: &mut RedactionAudit) -> String {
+    // WHY: nearly every string is clean. Each pass only allocates when its
+    // pattern actually matched (`replace_all` hands back the input untouched
+    // otherwise), so a clean string costs one copy instead of one per pattern.
     let mut output = input.to_string();
 
-    let private_redacted = private_key_regex()
-        .replace_all(&output, |_: &Captures<'_>| {
-            audit.record("private_key");
-            "[REDACTED PRIVATE KEY]"
-        })
-        .into_owned();
-    output = private_redacted;
+    replace_matches(private_key_regex(), &mut output, |_: &Captures<'_>| {
+        audit.record("private_key");
+        "[REDACTED PRIVATE KEY]"
+    });
 
-    output = env_assignment_regex()
-        .replace_all(&output, |caps: &Captures<'_>| {
+    replace_matches(
+        env_assignment_regex(),
+        &mut output,
+        |caps: &Captures<'_>| {
             audit.record("env_assignment");
             format!("{}{}[REDACTED]", &caps["name"], &caps["sep"])
-        })
-        .into_owned();
+        },
+    );
 
-    output = bearer_regex()
-        .replace_all(&output, |caps: &Captures<'_>| {
-            audit.record("bearer_token");
-            format!("{}[REDACTED]", &caps["prefix"])
-        })
-        .into_owned();
+    replace_matches(bearer_regex(), &mut output, |caps: &Captures<'_>| {
+        audit.record("bearer_token");
+        format!("{}[REDACTED]", &caps["prefix"])
+    });
 
     for (regex, replacement, kind) in token_patterns() {
-        output = regex
-            .replace_all(&output, |_: &Captures<'_>| {
-                audit.record(kind);
-                *replacement
-            })
-            .into_owned();
+        replace_matches(regex, &mut output, |_: &Captures<'_>| {
+            audit.record(kind);
+            *replacement
+        });
     }
 
     output
+}
+
+/// Replace every match of `regex` in `text`, allocating only when one matched.
+///
+/// WHY: `replace_all` with a closure sets up capture-group storage on every
+/// call even when nothing matches. The overwhelming majority of strings are
+/// clean, so a plain `is_match` (no captures, no allocation) goes first.
+fn replace_matches<R: regex::Replacer>(regex: &Regex, text: &mut String, replacer: R) {
+    if !regex.is_match(text.as_str()) {
+        return;
+    }
+    let replaced = match regex.replace_all(text.as_str(), replacer) {
+        Cow::Owned(replaced) => Some(replaced),
+        Cow::Borrowed(_) => None,
+    };
+    if let Some(replaced) = replaced {
+        *text = replaced;
+    }
 }
 
 fn redact_json_value(value: &Value, audit: &mut RedactionAudit) -> Value {
@@ -159,21 +180,7 @@ fn redact_json_value(value: &Value, audit: &mut RedactionAudit) -> Value {
         ),
         Value::Object(map) => Value::Object(
             map.iter()
-                .map(|(key, value)| {
-                    (
-                        key.clone(),
-                        if key.to_lowercase().contains("path") {
-                            match value {
-                                Value::String(text) => {
-                                    Value::String(redact_text_with_audit(text, audit))
-                                }
-                                _ => redact_json_value(value, audit),
-                            }
-                        } else {
-                            redact_json_value(value, audit)
-                        },
-                    )
-                })
+                .map(|(key, value)| (key.clone(), redact_json_value(value, audit)))
                 .collect(),
         ),
         _ => value.clone(),

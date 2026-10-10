@@ -567,10 +567,17 @@ fn embed_and_store(
                 batch.len()
             )));
         }
+        // One transaction per batch: committing each row separately costs a
+        // journal sync per chunk, which dwarfs the insert itself.
+        let tx = conn
+            .unchecked_transaction()
+            .map_err(|e| CassioError::Other(format!("Failed to begin index transaction: {e}")))?;
         for (chunk, embedding) in batch.iter().zip(embeddings) {
-            store_chunk(conn, chunk, &embedding)?;
+            store_chunk(&tx, chunk, &embedding)?;
             embedded += 1;
         }
+        tx.commit()
+            .map_err(|e| CassioError::Other(format!("Failed to commit index batch: {e}")))?;
         eprintln!(
             "index: stored batch {}/{}; embedded {}/{} chunk(s)",
             batch_number,
@@ -840,33 +847,45 @@ fn delete_stale_chunks(
             .insert(chunk.id.clone());
     }
 
+    let tx = conn
+        .unchecked_transaction()
+        .map_err(|e| CassioError::Other(format!("Failed to begin stale-chunk sweep: {e}")))?;
     let mut deleted = 0usize;
-    for path in files {
-        let source_path = path
-            .strip_prefix(root)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
-        let keep = ids_by_source.get(&source_path).cloned().unwrap_or_default();
-        let mut stmt = conn
+    {
+        let mut select = tx
             .prepare("SELECT id FROM chunks WHERE source_path = ?1")
             .map_err(|e| CassioError::Other(format!("Failed to query stale chunks: {e}")))?;
-        let existing = stmt
-            .query_map(params![source_path], |row| row.get::<_, String>(0))
-            .map_err(|e| CassioError::Other(format!("Failed to read stale chunks: {e}")))?;
-        let mut stale = Vec::new();
-        for id in existing {
-            let id = id.map_err(|e| CassioError::Other(format!("Failed to read chunk id: {e}")))?;
-            if !keep.contains(&id) {
-                stale.push(id);
+        let mut delete = tx
+            .prepare("DELETE FROM chunks WHERE id = ?1")
+            .map_err(|e| CassioError::Other(format!("Failed to delete stale chunks: {e}")))?;
+        let no_ids = HashSet::new();
+        for path in files {
+            let source_path = path
+                .strip_prefix(root)
+                .unwrap_or(path)
+                .to_string_lossy()
+                .to_string();
+            let keep = ids_by_source.get(&source_path).unwrap_or(&no_ids);
+            let existing = select
+                .query_map(params![source_path], |row| row.get::<_, String>(0))
+                .map_err(|e| CassioError::Other(format!("Failed to read stale chunks: {e}")))?;
+            let mut stale = Vec::new();
+            for id in existing {
+                let id =
+                    id.map_err(|e| CassioError::Other(format!("Failed to read chunk id: {e}")))?;
+                if !keep.contains(&id) {
+                    stale.push(id);
+                }
+            }
+            for id in stale {
+                deleted += delete.execute(params![id]).map_err(|e| {
+                    CassioError::Other(format!("Failed to delete stale chunk: {e}"))
+                })?;
             }
         }
-        for id in stale {
-            deleted += conn
-                .execute("DELETE FROM chunks WHERE id = ?1", params![id])
-                .map_err(|e| CassioError::Other(format!("Failed to delete stale chunk: {e}")))?;
-        }
     }
+    tx.commit()
+        .map_err(|e| CassioError::Other(format!("Failed to commit stale-chunk sweep: {e}")))?;
     Ok(deleted)
 }
 

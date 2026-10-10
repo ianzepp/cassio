@@ -201,3 +201,128 @@ fn test_process_file_list_disambiguates_same_second_collision() {
 
     fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn test_parallel_map_returns_results_in_item_order() {
+    let items = [10, 20, 30, 40, 50];
+    // Hand work out in a scrambled order; results must still line up with `items`.
+    let order = [3, 1, 4, 0, 2];
+    let results = parallel_map(&items, &order, 3, |index, value| value + index as i32);
+    assert_eq!(results, vec![10, 21, 32, 43, 54]);
+
+    let single = parallel_map(&items, &[0, 1, 2, 3, 4], 1, |_, value| *value);
+    assert_eq!(single, items.to_vec());
+}
+
+#[test]
+fn test_process_file_list_writes_every_session_in_a_large_collision_group() {
+    let dir = temp_dir("collision-many");
+    let out = dir.join("out");
+    let ids = ["a", "b", "c", "d", "e", "f", "g", "h", "i"];
+    let mut files = Vec::new();
+    for id in ids {
+        write_grok_session(&dir.join(format!("sess-{id}")), id, &format!("text-{id}"));
+        files.push((
+            Tool::Grok,
+            dir.join(format!("sess-{id}/chat_history.jsonl")),
+        ));
+    }
+    // A zero-byte session must be skipped without disturbing the others.
+    let empty = dir.join("sess-empty");
+    write_grok_session(&empty, "z", "never");
+    fs::write(empty.join("chat_history.jsonl"), "").unwrap();
+    files.push((Tool::Grok, empty.join("chat_history.jsonl")));
+
+    process_file_list(
+        &files,
+        &out,
+        None,
+        false,
+        OutputFormat::EmojiText,
+        None,
+        false,
+    )
+    .unwrap();
+
+    let month = out.join("2026-07");
+    let mut names: Vec<String> = fs::read_dir(&month)
+        .unwrap()
+        .filter_map(|entry| entry.ok())
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .filter(|name| name.ends_with(".md"))
+        .collect();
+    names.sort();
+    assert_eq!(names.len(), ids.len(), "names: {names:?}");
+
+    // Exactly one session keeps the canonical name: the earliest source path.
+    let canonical = "2026-07-31T16-05-00-grok.md";
+    assert!(names.iter().any(|name| name == canonical), "{names:?}");
+    assert!(
+        fs::read_to_string(month.join(canonical))
+            .unwrap()
+            .contains("hello text-a")
+    );
+
+    // Every session's text lands in exactly one file, and none were lost.
+    for id in ids {
+        let needle = format!("hello text-{id}");
+        let hits = names
+            .iter()
+            .filter(|name| {
+                fs::read_to_string(month.join(name))
+                    .map(|body| body.contains(&needle))
+                    .unwrap_or(false)
+            })
+            .count();
+        assert_eq!(hits, 1, "session {id} written {hits} times");
+    }
+
+    fs::remove_dir_all(dir).ok();
+}
+
+#[test]
+fn test_is_up_to_date_uses_state_db_and_wal_for_hermes_virtual_paths() {
+    use std::time::Duration;
+
+    let dir = temp_dir("hermes-fresh");
+    fs::create_dir_all(&dir).unwrap();
+    let db = dir.join("state.db");
+    let wal = dir.join("state.db-wal");
+    let output = dir.join("out.md");
+    for path in [&db, &wal, &output] {
+        fs::write(path, "x").unwrap();
+    }
+    let base = SystemTime::now() - Duration::from_secs(1_000);
+    let set = |path: &PathBuf, offset: u64| {
+        fs::File::options()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_modified(base + Duration::from_secs(offset))
+            .unwrap();
+    };
+    let session = dir.join("state.db/20260508_183040_abc123");
+
+    // Output newer than both DB and WAL: nothing to regenerate.
+    set(&db, 10);
+    set(&wal, 20);
+    set(&output, 30);
+    assert!(is_up_to_date(&session, &output));
+
+    // A newer WAL (uncheckpointed write) makes the session stale.
+    set(&wal, 40);
+    assert!(!is_up_to_date(&session, &output));
+
+    // Without a WAL the DB file alone decides.
+    fs::remove_file(&wal).unwrap();
+    set(&db, 10);
+    assert!(is_up_to_date(&session, &output));
+    set(&db, 50);
+    assert!(!is_up_to_date(&session, &output));
+
+    // A missing database is never "up to date".
+    fs::remove_file(&db).unwrap();
+    assert!(!is_up_to_date(&session, &output));
+
+    fs::remove_dir_all(dir).ok();
+}

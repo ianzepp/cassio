@@ -82,3 +82,44 @@ fn redacts_session_content_before_output() {
     assert!(!summary.contains("sk-ant-"));
     assert!(summary.contains("CLAUDE_CODE_OAUTH_TOKEN=[REDACTED]"));
 }
+
+#[test]
+fn clean_text_is_returned_unchanged() {
+    let input = "plain prose mentioning sk- and a bearer of bad news, nothing secret";
+    let mut audit = RedactionAudit::default();
+    assert_eq!(redact_text_with_audit(input, &mut audit), input);
+    assert_eq!(audit.count, 0);
+    assert!(audit.kinds.is_empty());
+}
+
+#[test]
+fn audit_counts_every_match_and_records_each_kind_once() {
+    let input = "one sk-ant-api03-aaaaaaaaaaaaaaaaaaaaaaaa two sk-ant-api03-bbbbbbbbbbbbbbbbbbbbbbbb \
+                 Authorization: Bearer abcdefghijklmnopqrstuvwxyz123456";
+    let mut audit = RedactionAudit::default();
+    let output = redact_text_with_audit(input, &mut audit);
+
+    assert_eq!(audit.count, 3, "output: {output}");
+    assert_eq!(audit.kinds, vec!["bearer_token", "api_key"]);
+    assert!(!output.contains("sk-ant-api03"));
+    assert!(output.contains("Authorization: Bearer [REDACTED]"));
+}
+
+#[test]
+fn json_values_are_redacted_through_nested_keys() {
+    let value = serde_json::json!({
+        "file_path": "/tmp/x",
+        "nested": {"cmd": "export OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz1234567890"},
+        "list": ["ok", "token sk-ant-api03-cccccccccccccccccccccccc"],
+        "n": 7
+    });
+    let mut audit = RedactionAudit::default();
+    let redacted = redact_json_value(&value, &mut audit);
+    let rendered = redacted.to_string();
+
+    assert!(!rendered.contains("sk-proj-"));
+    assert!(!rendered.contains("sk-ant-"));
+    assert!(rendered.contains("OPENAI_API_KEY=[REDACTED]"));
+    assert_eq!(redacted["n"], 7);
+    assert_eq!(audit.count, 2);
+}

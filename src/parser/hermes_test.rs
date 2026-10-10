@@ -91,3 +91,14 @@ fn parses_state_db_virtual_path() {
 
     fs::remove_dir_all(dir).ok();
 }
+
+#[test]
+fn state_db_virtual_path_resolves_db_and_wal_for_freshness() {
+    let [db, wal] =
+        state_db_freshness_sources(Path::new("/h/.hermes/state.db/20260508_183040_abc123"))
+            .expect("virtual state.db path");
+    assert_eq!(db, PathBuf::from("/h/.hermes/state.db"));
+    assert_eq!(wal, PathBuf::from("/h/.hermes/state.db-wal"));
+
+    assert!(state_db_freshness_sources(Path::new("/h/.hermes/sessions/session_x.json")).is_none());
+}

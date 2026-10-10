@@ -28,8 +28,8 @@ use crate::error::CassioError;
 use crate::parser::Parser;
 use crate::parser::claude::format_tool_input;
 use crate::training::{
-    ParsedSession, TrainingEvent, TrainingMetadata, TrainingSession, TrainingSource,
-    hash_named_chunks, next_event_id, training_stats_from_session,
+    ParsedSession, SourceHasher, TrainingEvent, TrainingMetadata, TrainingSession, TrainingSource,
+    next_event_id, training_stats_from_session,
 };
 
 pub struct KimiCodeParser;
@@ -110,7 +110,7 @@ fn parse_lines<I: Iterator<Item = String>>(
     let mut training_events: Vec<TrainingEvent> = Vec::new();
     let mut sequence: u64 = 0;
     let mut line_count: u64 = 0;
-    let mut hash_chunks: Vec<(String, String)> = Vec::new();
+    let mut hasher = SourceHasher::new();
 
     for (line_index, line) in lines.enumerate() {
         let trimmed = line.trim();
@@ -118,7 +118,7 @@ fn parse_lines<I: Iterator<Item = String>>(
             continue;
         }
         line_count += 1;
-        hash_chunks.push((format!("jsonl:{}", line_index + 1), line.clone()));
+        hasher.jsonl_line(line_index + 1, &line);
 
         let record: Value = match serde_json::from_str(trimmed) {
             Ok(v) => v,
@@ -433,7 +433,7 @@ fn parse_lines<I: Iterator<Item = String>>(
         tool: session.metadata.tool.to_string(),
         source_path,
         session_id: session.metadata.session_id.clone(),
-        source_hash: hash_named_chunks(hash_chunks),
+        source_hash: hasher.finish(),
         source_record_count: Some(line_count),
         source_format: Some("jsonl".to_string()),
         source_root,

@@ -33,6 +33,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::{self, BufRead};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use chrono::{Datelike, Local, TimeZone, Timelike, Utc};
 use clap::{Parser as ClapParser, Subcommand};
@@ -1163,7 +1164,7 @@ fn run_single_file(
 
     let stdout = io::stdout();
     let mut writer = stdout.lock();
-    let parsed = cassio::redact::redact_export(&parsed);
+    let parsed = cassio::redact::redact_export(parsed);
     format.formatter().format(&parsed, &mut writer)?;
     Ok(())
 }
@@ -1246,7 +1247,7 @@ fn run_stdin(format: OutputFormat, filter_dir: Option<&Path>) -> Result<(), Cass
         ),
         session,
     };
-    let parsed = cassio::redact::redact_export(&parsed);
+    let parsed = cassio::redact::redact_export(parsed);
     format.formatter().format(&parsed, &mut writer)?;
     Ok(())
 }
@@ -1412,21 +1413,7 @@ fn run_claude_chat_mode(
             continue;
         }
 
-        if let Some(parent) = out_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        let parsed = cassio::redact::redact_export(&parsed);
-        let formatter = format.formatter();
-        let mut file = fs::File::create(&out_path)?;
-        formatter.format(&parsed, &mut file)?;
-        if format == OutputFormat::EmojiText {
-            if let Some(parent) = training_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            let mut training_file = fs::File::create(&training_path)?;
-            cassio::formatter::training_json::TrainingJsonFormatter
-                .format(&parsed, &mut training_file)?;
-        }
+        write_session_outputs(parsed, format, &out_path, &training_path)?;
         processed += 1;
     }
 
@@ -1512,25 +1499,190 @@ fn run_all_mode(cli: &Cli, config: &Config, format: OutputFormat) -> Result<(), 
     Ok(())
 }
 
+/// Upper bound on concurrent parse/write workers.
+///
+/// Each in-flight session holds its whole source file plus the parsed trees in
+/// memory (roughly 4-5x the file size), and a single Codex or Grok session can
+/// run to hundreds of megabytes. The cap keeps a batch of giants from
+/// exhausting RAM while still using most of the available parallelism.
+const MAX_WORKERS: usize = 8;
+
+fn worker_count(items: usize) -> usize {
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .clamp(1, MAX_WORKERS)
+        .min(items.max(1))
+}
+
+/// Run `f(index, item)` for every item on `workers` scoped threads and return
+/// the results in `items` order.
+///
+/// Work is handed out in `order` (a permutation of item indices) so callers can
+/// schedule the biggest items first.
+fn parallel_map<T, R, F>(items: &[T], order: &[usize], workers: usize, f: F) -> Vec<R>
+where
+    T: Sync,
+    R: Send,
+    F: Fn(usize, &T) -> R + Sync,
+{
+    let cursor = AtomicUsize::new(0);
+    let batches: Vec<Vec<(usize, R)>> = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..workers.max(1))
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut done = Vec::new();
+                    while let Some(&index) = order.get(cursor.fetch_add(1, Ordering::Relaxed)) {
+                        done.push((index, f(index, &items[index])));
+                    }
+                    done
+                })
+            })
+            .collect();
+        handles
+            .into_iter()
+            .map(|handle| match handle.join() {
+                Ok(done) => done,
+                Err(payload) => std::panic::resume_unwind(payload),
+            })
+            .collect()
+    });
+
+    let mut slots: Vec<Option<R>> = (0..items.len()).map(|_| None).collect();
+    for (index, result) in batches.into_iter().flatten() {
+        slots[index] = Some(result);
+    }
+    slots.into_iter().flatten().collect()
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FileOutcome {
+    Processed,
+    Skipped,
+    UpToDate,
+}
+
+/// Settings shared by every file in one `process_file_list` run.
+struct BatchContext<'a> {
+    output_dir: &'a Path,
+    training_dir: &'a Path,
+    force: bool,
+    format: OutputFormat,
+    filter_dir: Option<&'a Path>,
+    dry_run: bool,
+}
+
+fn parser_for_tool(tool: Tool) -> Box<dyn Parser> {
+    match tool {
+        Tool::Claude | Tool::ClaudeDesktop => Box::new(cassio::parser::claude::ClaudeParser),
+        Tool::ClaudeChat => Box::new(cassio::parser::claude_chat::ClaudeChatParser),
+        Tool::Codex => Box::new(cassio::parser::codex::CodexParser),
+        Tool::Hermes => Box::new(cassio::parser::hermes::HermesParser),
+        Tool::OpenCode => Box::new(cassio::parser::opencode::OpenCodeParser),
+        Tool::Pi => Box::new(cassio::parser::pi::PiParser),
+        Tool::Grok => Box::new(cassio::parser::grok::GrokParser),
+        Tool::Cursor => Box::new(cassio::parser::cursor::CursorParser),
+        Tool::Kimi => Box::new(cassio::parser::kimi::KimiCodeParser),
+    }
+}
+
+/// Parse one session file and write its transcript (and training sidecar).
+///
+/// Parse failures are reported and counted as skipped; only output errors are
+/// returned, because those mean the batch cannot make progress.
+fn process_source_file(
+    ctx: &BatchContext<'_>,
+    tool: Tool,
+    path: &Path,
+    stem: (&str, &str),
+) -> Result<FileOutcome, CassioError> {
+    // Skip empty files
+    if path.is_file()
+        && let Ok(meta) = fs::metadata(path)
+        && meta.len() == 0
+    {
+        return Ok(FileOutcome::Skipped);
+    }
+
+    let (folder, stem) = stem;
+    let primary_root = match ctx.format {
+        OutputFormat::TrainingJson => ctx.training_dir,
+        _ => ctx.output_dir,
+    };
+    let out_path = primary_root
+        .join(folder)
+        .join(output_filename(stem, ctx.format));
+    let training_path = ctx
+        .training_dir
+        .join(folder)
+        .join(format!("{stem}.training.json"));
+
+    if !ctx.force {
+        let primary_ok = is_up_to_date(path, &out_path);
+        let training_ok = if ctx.format == OutputFormat::EmojiText {
+            is_up_to_date(path, &training_path)
+        } else {
+            true
+        };
+        if primary_ok && training_ok {
+            return Ok(FileOutcome::UpToDate);
+        }
+    }
+
+    let parsed = match parser_for_tool(tool).parse_export(path) {
+        Ok(parsed) => parsed,
+        Err(e) => {
+            eprintln!("\r  warning: skipping {}: {e}", path.display());
+            return Ok(FileOutcome::Skipped);
+        }
+    };
+
+    if parsed.session.stats.user_messages == 0 && parsed.session.stats.assistant_messages == 0 {
+        return Ok(FileOutcome::Skipped);
+    }
+
+    if let Some(filter) = ctx.filter_dir {
+        let filter_str = filter.to_string_lossy();
+        if !parsed
+            .session
+            .metadata
+            .project_path
+            .starts_with(filter_str.as_ref())
+        {
+            return Ok(FileOutcome::Skipped);
+        }
+    }
+
+    if ctx.dry_run {
+        eprintln!("  would write: {}", out_path.display());
+        if ctx.format == OutputFormat::EmojiText {
+            eprintln!("  would write: {}", training_path.display());
+        }
+    } else {
+        write_session_outputs(parsed, ctx.format, &out_path, &training_path)?;
+    }
+    Ok(FileOutcome::Processed)
+}
+
 /// Process a list of `(Tool, path)` pairs and write formatted transcripts to `output_dir`.
 ///
-/// PHASE 1: PRE-FLIGHT CHECKS
-/// Skip empty files (zero bytes) and files whose output is already up-to-date,
-/// unless `force` is true.
+/// PHASE 1: OUTPUT PATH DERIVATION AND DEDUPLICATION
+/// Compute each session's `YYYY-MM/filename` stem (this reads the head of every
+/// source) and disambiguate stems that collide so no two sessions share a file.
 ///
-/// PHASE 2: OUTPUT PATH DERIVATION
-/// Compute the `YYYY-MM/filename.md` path within `output_dir` using
-/// `derive_output_path_for`. Create parent directories as needed.
-/// `*.training.json` files go to `training_output` when set, otherwise
-/// beside the transcript under `output_dir`.
-///
-/// PHASE 3: PARSING AND WRITING
-/// Parse the session with the appropriate tool parser and write formatted output.
+/// PHASE 2: PER-FILE PROCESSING, IN PARALLEL
+/// Skip empty files and files whose output is already up-to-date (unless `force`),
+/// then parse the session with the tool's parser, redact it, and write the
+/// transcript. `*.training.json` files go to `training_output` when set,
+/// otherwise beside the transcript under `output_dir`.
 /// Sessions with no user or assistant messages are skipped (they contain only
 /// system events and produce empty transcripts).
 /// Parse failures are logged as warnings but do not abort the batch.
 ///
-/// Progress is reported to stderr with a rolling counter every 100 files.
+/// Files are independent once their output paths are fixed, so they are spread
+/// over a small worker pool, largest first. Progress is reported to stderr with
+/// a rolling counter every 100 files; under `dry_run` the "would write" lines
+/// appear in completion order.
 fn process_file_list(
     files: &[(Tool, PathBuf)],
     output_dir: &Path,
@@ -1541,10 +1693,16 @@ fn process_file_list(
     dry_run: bool,
 ) -> Result<(), CassioError> {
     let total = files.len();
-    let mut processed = 0u32;
-    let mut skipped = 0u32;
-    let mut up_to_date = 0u32;
-    let training_dir = training_output.unwrap_or(output_dir);
+    let workers = worker_count(total);
+    let ctx = BatchContext {
+        output_dir,
+        training_dir: training_output.unwrap_or(output_dir),
+        force,
+        format,
+        filter_dir,
+        dry_run,
+    };
+    let identity: Vec<usize> = (0..total).collect();
 
     // Disambiguate same-name output paths before writing. Several tools derive
     // `YYYY-MM-DDTHH-MM-SS-{tool}.md` stems at second precision, so sessions
@@ -1557,139 +1715,118 @@ fn process_file_list(
     // source paths. Keeping the first session's name stable means a --force
     // regeneration never renames the original transcript in Git — it only adds
     // new files for the extra sessions.
-    let mut stems: Vec<(String, String)> = Vec::with_capacity(files.len());
-    for (tool, path) in files {
-        stems.push(derive_output_stem_for(*tool, path)?);
-    }
-    let mut groups: HashMap<(&str, &str), Vec<usize>> = HashMap::new();
+    let stems: Vec<(String, String)> = parallel_map(files, &identity, workers, |_, file| {
+        derive_output_stem_for(file.0, &file.1)
+    })
+    .into_iter()
+    .collect::<Result<_, _>>()?;
+
+    // Per (folder, stem): how many sessions claim it and which source path
+    // sorts first. One pass; a group can be large (every unreadable Claude
+    // file lands in `unknown/unknown-claude`), so a per-member scan would be
+    // quadratic.
+    let mut groups: HashMap<(&str, &str), (usize, usize)> = HashMap::new();
     for (index, (folder, stem)) in stems.iter().enumerate() {
-        groups
+        let entry = groups
             .entry((folder.as_str(), stem.as_str()))
-            .or_default()
-            .push(index);
-    }
-    let mut unique_stems: Vec<(String, String)> = Vec::with_capacity(files.len());
-    for (index, (folder, stem)) in stems.iter().enumerate() {
-        let group = &groups[&(folder.as_str(), stem.as_str())];
-        let first = group
-            .iter()
-            .copied()
-            .min_by(|&a, &b| files[a].1.cmp(&files[b].1))
-            .unwrap_or(index);
-        if group.len() > 1 && index != first {
-            let hash = short_source_hash(&files[index].1);
-            unique_stems.push((folder.clone(), disambiguated_stem(stem, &hash)));
-        } else {
-            unique_stems.push((folder.clone(), stem.clone()));
+            .or_insert((0, index));
+        entry.0 += 1;
+        if files[index].1 < files[entry.1].1 {
+            entry.1 = index;
         }
     }
-
-    for (i, (tool, path)) in files.iter().enumerate() {
-        if (i + 1) == 1 || (i + 1) % 100 == 0 {
-            eprint!("\r  Processing {}/{}...", i + 1, total);
-        }
-
-        // Skip empty files
-        if path.is_file()
-            && let Ok(meta) = fs::metadata(path)
-            && meta.len() == 0
-        {
-            skipped += 1;
-            continue;
-        }
-
-        let (folder, stem) = &unique_stems[i];
-        let primary_root = match format {
-            OutputFormat::TrainingJson => training_dir,
-            _ => output_dir,
-        };
-        let out_path = primary_root
-            .join(folder)
-            .join(output_filename(stem.as_str(), format));
-        let training_path = training_dir
-            .join(folder)
-            .join(format!("{stem}.training.json"));
-
-        if !force {
-            let primary_ok = is_up_to_date(path, &out_path);
-            let training_ok = if format == OutputFormat::EmojiText {
-                is_up_to_date(path, &training_path)
+    let unique_stems: Vec<(String, String)> = stems
+        .iter()
+        .enumerate()
+        .map(|(index, (folder, stem))| {
+            let (count, first) = groups[&(folder.as_str(), stem.as_str())];
+            if count > 1 && index != first {
+                let hash = short_source_hash(&files[index].1);
+                (folder.clone(), disambiguated_stem(stem, &hash))
             } else {
-                true
-            };
-            if primary_ok && training_ok {
-                up_to_date += 1;
-                continue;
+                (folder.clone(), stem.clone())
             }
+        })
+        .collect();
+
+    // Largest sources first so a giant session never becomes the tail.
+    let sizes: Vec<u64> = files
+        .iter()
+        .map(|(_, path)| fs::metadata(path).map(|m| m.len()).unwrap_or(0))
+        .collect();
+    let mut order = identity;
+    order.sort_by_key(|&index| std::cmp::Reverse(sizes[index]));
+
+    let finished = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let outcomes = parallel_map(files, &order, workers, |index, (tool, path)| {
+        if failed.load(Ordering::Relaxed) {
+            return Ok(FileOutcome::Skipped);
         }
+        let (folder, stem) = &unique_stems[index];
+        let outcome = process_source_file(&ctx, *tool, path, (folder, stem));
+        if outcome.is_err() {
+            failed.store(true, Ordering::Relaxed);
+        }
+        let done = finished.fetch_add(1, Ordering::Relaxed) + 1;
+        if done == 1 || done.is_multiple_of(100) {
+            eprint!("\r  Processing {done}/{total}...");
+        }
+        outcome
+    });
 
-        let parser: Box<dyn Parser> = match tool {
-            Tool::Claude | Tool::ClaudeDesktop => Box::new(cassio::parser::claude::ClaudeParser),
-            Tool::ClaudeChat => Box::new(cassio::parser::claude_chat::ClaudeChatParser),
-            Tool::Codex => Box::new(cassio::parser::codex::CodexParser),
-            Tool::Hermes => Box::new(cassio::parser::hermes::HermesParser),
-            Tool::OpenCode => Box::new(cassio::parser::opencode::OpenCodeParser),
-            Tool::Pi => Box::new(cassio::parser::pi::PiParser),
-            Tool::Grok => Box::new(cassio::parser::grok::GrokParser),
-            Tool::Cursor => Box::new(cassio::parser::cursor::CursorParser),
-            Tool::Kimi => Box::new(cassio::parser::kimi::KimiCodeParser),
-        };
-
-        match parser.parse_export(path) {
-            Ok(parsed) => {
-                if parsed.session.stats.user_messages == 0
-                    && parsed.session.stats.assistant_messages == 0
-                {
-                    skipped += 1;
-                    continue;
-                }
-
-                if let Some(filter) = filter_dir {
-                    let filter_str = filter.to_string_lossy();
-                    if !parsed
-                        .session
-                        .metadata
-                        .project_path
-                        .starts_with(filter_str.as_ref())
-                    {
-                        skipped += 1;
-                        continue;
-                    }
-                }
-
-                if dry_run {
-                    eprintln!("  would write: {}", out_path.display());
-                    if format == OutputFormat::EmojiText {
-                        eprintln!("  would write: {}", training_path.display());
-                    }
-                    processed += 1;
-                } else {
-                    if let Some(parent) = out_path.parent() {
-                        fs::create_dir_all(parent)?;
-                    }
-                    let parsed = cassio::redact::redact_export(&parsed);
-                    let formatter = format.formatter();
-                    let mut file = fs::File::create(&out_path)?;
-                    formatter.format(&parsed, &mut file)?;
-                    if format == OutputFormat::EmojiText {
-                        if let Some(parent) = training_path.parent() {
-                            fs::create_dir_all(parent)?;
-                        }
-                        let mut training_file = fs::File::create(&training_path)?;
-                        cassio::formatter::training_json::TrainingJsonFormatter
-                            .format(&parsed, &mut training_file)?;
-                    }
-                    processed += 1;
-                }
-            }
-            Err(e) => {
-                eprintln!("\r  warning: skipping {}: {e}", path.display());
-                skipped += 1;
-            }
+    let mut processed = 0u32;
+    let mut skipped = 0u32;
+    let mut up_to_date = 0u32;
+    for outcome in outcomes {
+        match outcome? {
+            FileOutcome::Processed => processed += 1,
+            FileOutcome::Skipped => skipped += 1,
+            FileOutcome::UpToDate => up_to_date += 1,
         }
     }
 
     eprintln!("\r  Done: {processed} processed, {skipped} skipped, {up_to_date} up-to-date     ");
+    Ok(())
+}
+
+/// Redact `parsed`, then write the primary transcript (and, for emoji-text, the
+/// `*.training.json` sidecar) to disk.
+fn write_session_outputs(
+    parsed: ParsedSession,
+    format: OutputFormat,
+    out_path: &Path,
+    training_path: &Path,
+) -> Result<(), CassioError> {
+    let parsed = cassio::redact::redact_export(parsed);
+    write_formatted(out_path, format.formatter().as_ref(), &parsed)?;
+    if format == OutputFormat::EmojiText {
+        write_formatted(
+            training_path,
+            &cassio::formatter::training_json::TrainingJsonFormatter,
+            &parsed,
+        )?;
+    }
+    Ok(())
+}
+
+/// Create `path` (and its parent directory) and stream `formatter` output into it.
+///
+/// WHY: formatters emit many tiny writes (one per JSON token or output line).
+/// Against a bare `File` each of those is a `write(2)` syscall, which made the
+/// pretty-printed training JSON dominate `--all` wall time. `BufWriter` batches
+/// them; the explicit `flush` surfaces write errors that `Drop` would swallow.
+fn write_formatted(
+    path: &Path,
+    formatter: &dyn Formatter,
+    parsed: &ParsedSession,
+) -> Result<(), CassioError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut writer = io::BufWriter::with_capacity(64 * 1024, fs::File::create(path)?);
+    formatter.format(parsed, &mut writer)?;
+    io::Write::flush(&mut writer)?;
     Ok(())
 }
 
@@ -1792,23 +1929,31 @@ fn output_filename(stem: &str, format: OutputFormat) -> String {
 /// Virtual Claude Chat paths (`…/conversations.json/<uuid>`) resolve to the real
 /// export root (zip / json / directory) so mtime checks work.
 fn is_up_to_date(input: &Path, output: &Path) -> bool {
-    let mtime_input = cassio::parser::claude_chat::export_root_from_virtual(input)
-        .unwrap_or_else(|| input.to_path_buf());
-    let input_meta = match fs::metadata(&mtime_input) {
-        Ok(m) => m,
-        Err(_) => return false,
+    let Some(input_modified) = input_modified(input) else {
+        return false;
     };
-    let output_meta = match fs::metadata(output) {
-        Ok(m) => m,
-        Err(_) => return false,
+    let Ok(output_modified) = fs::metadata(output).and_then(|m| m.modified()) else {
+        return false;
     };
-    if let (Ok(input_modified), Ok(output_modified)) =
-        (input_meta.modified(), output_meta.modified())
-    {
-        output_modified >= input_modified
-    } else {
-        false
+    output_modified >= input_modified
+}
+
+/// Newest modification time of the real file(s) behind `input`, or `None` when
+/// the source is missing or its mtime is unavailable.
+///
+/// Virtual paths (Claude Chat `conversations.json/<uuid>`, Hermes
+/// `state.db/<session_id>`) resolve to the file that actually holds the data.
+fn input_modified(input: &Path) -> Option<std::time::SystemTime> {
+    let mtime = |path: &Path| fs::metadata(path).and_then(|m| m.modified()).ok();
+
+    if let Some(root) = cassio::parser::claude_chat::export_root_from_virtual(input) {
+        return mtime(&root);
     }
+    if let Some([db, wal]) = cassio::parser::hermes::state_db_freshness_sources(input) {
+        // The WAL only exists while uncheckpointed writes are pending.
+        return [mtime(&db), mtime(&wal)].into_iter().flatten().max();
+    }
+    mtime(input)
 }
 
 #[cfg(test)]
