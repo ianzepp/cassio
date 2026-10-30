@@ -384,3 +384,199 @@ fn test_file_read_tracking_from_shell() {
     let session = CodexParser::parse_from_lines(lines.into_iter()).unwrap();
     assert!(session.stats.files_read.contains("/foo/bar.rs"));
 }
+
+fn response_user_message(text: &str) -> Value {
+    serde_json::json!({
+        "type": "message",
+        "role": "user",
+        "content": [{"type": "input_text", "text": text}],
+    })
+}
+
+fn parse_user_records(records: Vec<(&str, Value)>) -> ParsedSession {
+    let mut lines = vec![make_record(
+        "session_meta",
+        "2026-10-26T10:00:00Z",
+        session_meta("user-repro", "/proj"),
+    )];
+    for (i, (kind, payload)) in records.into_iter().enumerate() {
+        lines.push(make_record(
+            kind,
+            &format!("2026-10-26T10:00:{:02}Z", i + 1),
+            payload,
+        ));
+    }
+    parse_lines(lines.into_iter(), "stdin".into(), None).unwrap()
+}
+
+fn exported_user_texts(parsed: &ParsedSession) -> Vec<&str> {
+    parsed
+        .session
+        .messages
+        .iter()
+        .filter(|message| message.role == Role::User)
+        .flat_map(|message| &message.content)
+        .filter_map(|block| match block {
+            ContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn test_response_user_text_reaches_transcript_and_training_export() {
+    use crate::formatter::Formatter;
+
+    let parsed = parse_user_records(vec![
+        (
+            "response_item",
+            response_user_message("Please fix the bug."),
+        ),
+        ("response_item", assistant_message("I will.")),
+    ]);
+    assert_eq!(exported_user_texts(&parsed), ["Please fix the bug."]);
+    assert_eq!(parsed.session.stats.user_messages, 1);
+    assert_eq!(parsed.training.stats.user_messages, 1);
+    let event = parsed
+        .training
+        .events
+        .iter()
+        .find(|e| e.role.as_deref() == Some("user"))
+        .unwrap();
+    assert_eq!(event.raw_text.as_deref(), Some("Please fix the bug."));
+    assert_eq!(event.source_record_refs, ["jsonl:2"]);
+    assert_eq!(event.timestamp, parsed.session.messages[0].timestamp);
+    let mut output = Vec::new();
+    crate::formatter::emoji_text::EmojiTextFormatter
+        .format(&parsed, &mut output)
+        .unwrap();
+    let text = String::from_utf8(output).unwrap();
+    assert!(text.contains("👤 Please fix the bug."));
+    assert!(text.contains("Messages: 1 user, 1 assistant"));
+}
+
+#[test]
+fn test_user_copies_deduplicated_in_either_order_with_both_source_refs() {
+    for response_first in [true, false] {
+        let mut records = vec![
+            ("response_item", response_user_message("hello")),
+            ("event_msg", user_message("hello")),
+        ];
+        if !response_first {
+            records.reverse();
+        }
+        let parsed = parse_user_records(records);
+        assert_eq!(exported_user_texts(&parsed), ["hello"]);
+        assert_eq!(parsed.session.stats.user_messages, 1);
+        assert_eq!(parsed.training.stats.user_messages, 1);
+        assert_eq!(parsed.training.events.len(), 1);
+        assert_eq!(
+            parsed.training.events[0].source_record_refs,
+            ["jsonl:2", "jsonl:3"]
+        );
+    }
+}
+
+#[test]
+fn test_repeated_user_prompts_survive_across_turns_and_formats() {
+    let parsed = parse_user_records(vec![
+        ("event_msg", user_message("again")),
+        ("response_item", assistant_message("first")),
+        ("response_item", response_user_message("again")),
+        ("event_msg", user_message("again")),
+        ("response_item", assistant_message("second")),
+        ("response_item", response_user_message("again")),
+    ]);
+    assert_eq!(exported_user_texts(&parsed), ["again", "again", "again"]);
+    assert_eq!(parsed.session.stats.user_messages, 3);
+    assert_eq!(parsed.training.stats.user_messages, 3);
+}
+
+#[test]
+fn test_repeated_same_source_messages_are_not_deduplicated() {
+    let parsed = parse_user_records(vec![
+        ("response_item", response_user_message("again")),
+        ("response_item", response_user_message("again")),
+        ("event_msg", user_message("again")),
+        ("event_msg", user_message("again")),
+    ]);
+    assert_eq!(exported_user_texts(&parsed), ["again", "again"]);
+    assert_eq!(parsed.training.events.len(), 2);
+}
+
+#[test]
+fn test_response_user_content_blocks_exclude_injected_context() {
+    let parsed = parse_user_records(vec![
+        (
+            "response_item",
+            response_user_message("# AGENTS.md instructions\n\n<INSTRUCTIONS>rules</INSTRUCTIONS>"),
+        ),
+        (
+            "response_item",
+            response_user_message("<environment_context>cwd</environment_context>"),
+        ),
+        (
+            "response_item",
+            response_user_message("<subagent_notification>completed</subagent_notification>"),
+        ),
+        (
+            "response_item",
+            serde_json::json!({
+                "type": "message", "role": "user", "content": [
+                    {"type": "input_text", "text": "<environment_context>cwd</environment_context>"},
+                    {"type": "input_text", "text": "Look at this image."},
+                    {"type": "input_image", "image_url": "data:image/png;base64,ignored"},
+                    {"type": "input_text", "text": "Then fix <context ref=\"a.rs\">code</context> [@a.rs](file) please."}
+                ],
+            }),
+        ),
+    ]);
+    assert_eq!(
+        exported_user_texts(&parsed),
+        ["Look at this image.\nThen fix  please."]
+    );
+    assert_eq!(parsed.session.stats.user_messages, 1);
+    assert_eq!(parsed.training.events.len(), 1);
+    assert!(
+        parsed.training.events[0]
+            .raw_text
+            .as_deref()
+            .unwrap()
+            .contains("<context ref=")
+    );
+}
+
+#[test]
+fn test_user_xml_is_preserved_unless_it_is_known_injected_context() {
+    let parsed = parse_user_records(vec![(
+        "response_item",
+        response_user_message("<example>keep this</example>"),
+    )]);
+    assert_eq!(
+        exported_user_texts(&parsed),
+        ["<example>keep this</example>"]
+    );
+}
+
+#[test]
+fn test_task_boundaries_keep_identical_prompts_without_assistant_text() {
+    for boundary in ["task_started", "task_complete"] {
+        let parsed = parse_user_records(vec![
+            ("event_msg", user_message("again")),
+            ("event_msg", serde_json::json!({"type": boundary})),
+            ("response_item", response_user_message("again")),
+        ]);
+        assert_eq!(exported_user_texts(&parsed), ["again", "again"]);
+        assert_eq!(parsed.training.events.len(), 2);
+    }
+}
+
+#[test]
+fn test_distinct_user_text_from_each_source_is_preserved() {
+    let parsed = parse_user_records(vec![
+        ("event_msg", user_message("first")),
+        ("response_item", response_user_message("second")),
+    ]);
+    assert_eq!(exported_user_texts(&parsed), ["first", "second"]);
+    assert_eq!(parsed.training.events.len(), 2);
+}

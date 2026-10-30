@@ -10,7 +10,7 @@
 //! |----------------|------------------------------------------------------|
 //! | `session_meta` | One-time header with session ID, cwd, version, git  |
 //! | `event_msg`    | User input (`user_message` subtype)                  |
-//! | `response_item`| Assistant output, function calls, and outputs        |
+//! | `response_item`| User/assistant messages, function calls, and outputs |
 //! | `turn_context` | Model name for the upcoming turn                     |
 //!
 //! # Tool call handling
@@ -35,9 +35,11 @@
 //!
 //! # TRADE-OFFS
 //!
-//! - `response_item` records with `role: "user"` are skipped because they duplicate
-//!   content already captured by the `event_msg` records. Keeping only `event_msg`
-//!   avoids double-counting user messages.
+//! - User input can appear as `response_item` messages, `event_msg` events, or
+//!   both. Pair equal text from opposite sources within a turn, retaining both
+//!   source references without dropping repeated prompts or mixed-format turns.
+//! - Injected instruction/context blocks in user-role response items are omitted
+//!   so they do not masquerade as human speech.
 //! - File read tracking uses simple string pattern matching on shell commands
 //!   (`cat`, `less`, etc.) rather than full command parsing. This catches the most
 //!   common cases but will miss reads via pipes or aliases.
@@ -106,8 +108,9 @@ struct CodexRecord {
 ///
 /// PHASE 2: RECORD DISPATCH
 /// - `session_meta` → initialize `SessionMetadata` from the payload
+/// - User messages from either record type → deduplicate, clean, and export
 /// - `response_item` → route to assistant message, function call, or output handling
-/// - `event_msg` → extract and clean user messages
+/// - `event_msg` → extract cumulative token usage
 /// - `turn_context` → emit `ModelChange` events when the model name shifts
 ///
 /// PHASE 3: FINALIZATION
@@ -128,6 +131,9 @@ fn parse_lines<I: Iterator<Item = String>>(
     let mut first_timestamp: Option<DateTime<Utc>> = None;
     let mut last_timestamp: Option<DateTime<Utc>> = None;
     let mut training_events: Vec<TrainingEvent> = Vec::new();
+    // Unpaired user records in the current turn: text, response-item origin,
+    // and training event index. Same-source repetitions remain distinct.
+    let mut unpaired_users: Vec<(String, bool, usize)> = Vec::new();
     let mut sequence: u64 = 0;
     let mut line_count: u64 = 0;
     let mut hasher = SourceHasher::new();
@@ -152,6 +158,90 @@ fn parse_lines<I: Iterator<Item = String>>(
                 first_timestamp = Some(t);
             }
             last_timestamp = Some(t);
+        }
+
+        // A reply or explicit task boundary ends the opportunity to pair copies.
+        if (record.record_type == "response_item"
+            && record.payload.get("role").and_then(Value::as_str) == Some("assistant"))
+            || (record.record_type == "event_msg"
+                && matches!(
+                    record.payload.get("type").and_then(Value::as_str),
+                    Some("task_started" | "task_complete")
+                ))
+        {
+            unpaired_users.clear();
+        }
+
+        if let Some(msg) = user_message_text(&record) {
+            let from_response = record.record_type == "response_item";
+            if let Some(index) = unpaired_users
+                .iter()
+                .position(|(text, source, _)| *source != from_response && text == msg.trim())
+            {
+                let (_, _, event_index) = unpaired_users.remove(index);
+                training_events[event_index]
+                    .source_record_refs
+                    .push(source_ref);
+                continue;
+            }
+            unpaired_users.push((msg.trim().to_string(), from_response, training_events.len()));
+            sequence += 1;
+            training_events.push(TrainingEvent {
+                event_id: next_event_id(sequence),
+                sequence,
+                timestamp: ts,
+                role: Some("user".to_string()),
+                event_kind: "message".to_string(),
+                model: None,
+                raw_text: Some(msg.clone()),
+                sanitized_text: None,
+                tool_name: None,
+                tool_call_id: None,
+                tool_input_raw: None,
+                tool_input_sanitized: None,
+                tool_output_raw: None,
+                tool_output_sanitized: None,
+                usage: None,
+                source_record_refs: vec![source_ref.clone()],
+            });
+            // Clean up message - remove context blocks and file refs
+            let mut text = msg;
+            // Remove <context ref="...">...</context>
+            while let Some(start) = text.find("<context ref=\"") {
+                if let Some(end) = text[start..].find("</context>") {
+                    text = format!(
+                        "{}{}",
+                        &text[..start],
+                        &text[start + end + "</context>".len()..]
+                    );
+                } else {
+                    break;
+                }
+            }
+            // Remove [@file](url) references
+            while let Some(start) = text.find("[@") {
+                if let Some(paren_end) = text[start..].find(')') {
+                    text = format!(
+                        "{}{}",
+                        &text[..start],
+                        text[start + paren_end + 1..].trim_start()
+                    );
+                } else {
+                    break;
+                }
+            }
+            let text = text.trim().to_string();
+            if !text.is_empty() {
+                stats.user_messages += 1;
+                messages.push(Message {
+                    role: Role::User,
+                    timestamp: ts,
+                    model: None,
+                    content: vec![ContentBlock::Text { text }],
+                    usage: None,
+                });
+            }
+            continue;
         }
 
         match record.record_type.as_str() {
@@ -211,7 +301,7 @@ fn parse_lines<I: Iterator<Item = String>>(
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
                         if role == "user" {
-                            // Skip - duplicated from event_msg
+                            // No human text (injected context or a non-text content block).
                             continue;
                         }
                         if role == "assistant"
@@ -452,93 +542,33 @@ fn parse_lines<I: Iterator<Item = String>>(
                     .get("type")
                     .and_then(|v| v.as_str())
                     .unwrap_or("");
-                if payload_type == "token_count" {
-                    if let Some(info) = record.payload.get("info")
-                        && let Some(total) = info.get("total_token_usage")
-                    {
-                        let input = total
-                            .get("input_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        let cached = total
-                            .get("cached_input_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        let output = total
-                            .get("output_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        let reasoning = total
-                            .get("reasoning_output_tokens")
-                            .and_then(|v| v.as_u64())
-                            .unwrap_or(0);
-                        // total_token_usage is cumulative, so always overwrite with the latest
-                        stats.total_tokens = TokenUsage {
-                            input_tokens: input,
-                            output_tokens: output + reasoning,
-                            cache_read_tokens: cached,
-                            cache_creation_tokens: 0,
-                        };
-                    }
-                } else if payload_type == "user_message"
-                    && let Some(msg) = record.payload.get("message").and_then(|v| v.as_str())
+                if payload_type == "token_count"
+                    && let Some(info) = record.payload.get("info")
+                    && let Some(total) = info.get("total_token_usage")
                 {
-                    sequence += 1;
-                    training_events.push(TrainingEvent {
-                        event_id: next_event_id(sequence),
-                        sequence,
-                        timestamp: ts,
-                        role: Some("user".to_string()),
-                        event_kind: "message".to_string(),
-                        model: None,
-                        raw_text: Some(msg.to_string()),
-                        sanitized_text: None,
-                        tool_name: None,
-                        tool_call_id: None,
-                        tool_input_raw: None,
-                        tool_input_sanitized: None,
-                        tool_output_raw: None,
-                        tool_output_sanitized: None,
-                        usage: None,
-                        source_record_refs: vec![source_ref.clone()],
-                    });
-                    // Clean up message - remove context blocks and file refs
-                    let mut text = msg.to_string();
-                    // Remove <context ref="...">...</context>
-                    while let Some(start) = text.find("<context ref=\"") {
-                        if let Some(end) = text[start..].find("</context>") {
-                            text = format!(
-                                "{}{}",
-                                &text[..start],
-                                &text[start + end + "</context>".len()..]
-                            );
-                        } else {
-                            break;
-                        }
-                    }
-                    // Remove [@file](url) references
-                    while let Some(start) = text.find("[@") {
-                        if let Some(paren_end) = text[start..].find(')') {
-                            text = format!(
-                                "{}{}",
-                                &text[..start],
-                                text[start + paren_end + 1..].trim_start()
-                            );
-                        } else {
-                            break;
-                        }
-                    }
-                    let text = text.trim().to_string();
-                    if !text.is_empty() {
-                        stats.user_messages += 1;
-                        messages.push(Message {
-                            role: Role::User,
-                            timestamp: ts,
-                            model: None,
-                            content: vec![ContentBlock::Text { text }],
-                            usage: None,
-                        });
-                    }
+                    let input = total
+                        .get("input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let cached = total
+                        .get("cached_input_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let output = total
+                        .get("output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    let reasoning = total
+                        .get("reasoning_output_tokens")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                    // total_token_usage is cumulative, so always overwrite with the latest
+                    stats.total_tokens = TokenUsage {
+                        input_tokens: input,
+                        output_tokens: output + reasoning,
+                        cache_read_tokens: cached,
+                        cache_creation_tokens: 0,
+                    };
                 }
             }
             "turn_context" => {
@@ -622,7 +652,7 @@ fn parse_lines<I: Iterator<Item = String>>(
         source_root,
     };
     let mut training = TrainingSession::new(
-        "codex.v1",
+        "codex.v2",
         source,
         training_metadata,
         training_stats_from_session(&session.stats),
@@ -632,6 +662,57 @@ fn parse_lines<I: Iterator<Item = String>>(
     }
 
     Ok(ParsedSession { session, training })
+}
+
+/// Extract human text from either Codex representation without admitting the
+/// instruction and environment blocks that share the user role in response items.
+fn user_message_text(record: &CodexRecord) -> Option<String> {
+    let payload = &record.payload;
+    let payload_type = payload.get("type").and_then(Value::as_str);
+    if record.record_type == "event_msg" && payload_type == Some("user_message") {
+        return payload
+            .get("message")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+    }
+    if record.record_type != "response_item"
+        || payload_type != Some("message")
+        || payload.get("role").and_then(Value::as_str) != Some("user")
+    {
+        return None;
+    }
+    let text = payload
+        .get("content")?
+        .as_array()?
+        .iter()
+        .filter(|block| block.get("type").and_then(Value::as_str) == Some("input_text"))
+        .filter_map(|block| block.get("text").and_then(Value::as_str))
+        .filter(|text| !is_injected_user_context(text))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if text.trim().is_empty() {
+        None
+    } else {
+        Some(text)
+    }
+}
+
+fn is_injected_user_context(text: &str) -> bool {
+    let text = text.trim();
+    if text.starts_with("# AGENTS.md instructions") && text.contains("<INSTRUCTIONS>") {
+        return true;
+    }
+    [
+        "environment_context",
+        "subagent_notification",
+        "turn_aborted",
+        "goal_context",
+        "codex_internal_context",
+        "external_codex_apps_open_page",
+        "recommended_plugins",
+    ]
+    .iter()
+    .any(|tag| text.starts_with(&format!("<{tag}")) && text.ends_with(&format!("</{tag}>")))
 }
 
 /// Convert a Codex function name and JSON arguments string into a compact summary.
